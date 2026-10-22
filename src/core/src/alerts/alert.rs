@@ -2150,10 +2150,6 @@ pub fn manual_trigger_row(alert: &Alert) -> Map<String, Value> {
     row
 }
 
-/// Triggers an alert.
-/// ExistingAlertRepeated is suppressed by design and notifies nobody, so treating it as
-/// "notified" would skip every destination and leave the trigger silent.
-#[cfg(feature = "enterprise")]
 fn incident_path_notified(
     outcome: &config::meta::alerts::incidents::IncidentCorrelationOutcome,
 ) -> bool {
@@ -2162,7 +2158,20 @@ fn incident_path_notified(
         Outcome::NewIncidentCreated { .. }
         | Outcome::NewAlertTypeJoined { .. }
         | Outcome::SeverityEscalated { .. } => true,
-        Outcome::ExistingAlertRepeated { .. } => false,
+        Outcome::ExistingAlertRepeated { .. } => cfg!(not(feature = "enterprise")),
+    }
+}
+
+pub(crate) fn incidents_enabled() -> bool {
+    #[cfg(feature = "enterprise")]
+    {
+        o2_enterprise::enterprise::common::config::get_config()
+            .incidents
+            .enabled
+    }
+    #[cfg(not(feature = "enterprise"))]
+    {
+        config::get_config().oss_incidents.enabled
     }
 }
 
@@ -2178,12 +2187,7 @@ pub async fn trigger_by_id<C: ConnectionTrait>(
 
     // For creates_incident=true alerts the incident correlation path handles
     // the notification. For all other cases send the direct notification.
-    #[cfg(feature = "enterprise")]
-    let incident_notified = if alert.creates_incident
-        && o2_enterprise::enterprise::common::config::get_config()
-            .incidents
-            .enabled
-    {
+    let incident_notified = if alert.creates_incident && incidents_enabled() {
         let synthetic_row = manual_trigger_row(&alert);
         let notify = std::slice::from_ref(&synthetic_row);
 
@@ -2223,9 +2227,6 @@ pub async fn trigger_by_id<C: ConnectionTrait>(
     } else {
         false
     };
-
-    #[cfg(not(feature = "enterprise"))]
-    let incident_notified = false;
 
     let trace_id = config::ider::generate_trace_id();
     let trace_id = format!("trig_id_{trace_id}");
@@ -2280,12 +2281,7 @@ pub async fn trigger_by_name(
 
     // For creates_incident=true alerts the incident correlation path handles
     // the notification. For all other cases send the direct notification.
-    #[cfg(feature = "enterprise")]
-    let incident_notified = if alert.creates_incident
-        && o2_enterprise::enterprise::common::config::get_config()
-            .incidents
-            .enabled
-    {
+    let incident_notified = if alert.creates_incident && incidents_enabled() {
         let synthetic_row = manual_trigger_row(&alert);
         let notify = std::slice::from_ref(&synthetic_row);
 
@@ -2325,9 +2321,6 @@ pub async fn trigger_by_name(
     } else {
         false
     };
-
-    #[cfg(not(feature = "enterprise"))]
-    let incident_notified = false;
 
     let trace_id = config::ider::generate_trace_id();
     let trace_id = format!("trig_name_{trace_id}");
@@ -3170,7 +3163,6 @@ async fn send_to_destination(
 ///
 /// Used by incident notifications, which build their own payload rather than
 /// going through the alert template system.
-#[cfg(feature = "enterprise")]
 pub(crate) async fn dispatch_notification(
     dest_type: &DestinationType,
     subject: &str,
@@ -3198,14 +3190,6 @@ pub(crate) async fn dispatch_notification(
 /// of re-deriving it from `rendered`, or hardcoding a literal) keeps this
 /// function agnostic to the rendered payload's shape and guarantees the SNS
 /// subject is never anything other than the actual marked title.
-///
-/// Unlike [`dispatch_notification`], this is NOT enterprise-gated: test-send
-/// (Task 15) is an OSS-visible feature, and it needs the same private
-/// `send_http_notification` / `send_email_notification` / `send_sns_notification`
-/// transports this module already owns. Kept as a distinct, narrowly-scoped
-/// function rather than removing the `#[cfg]` from `dispatch_notification`
-/// itself, so the enterprise-only incident-notification call sites are
-/// untouched.
 pub(crate) async fn dispatch_test_message(
     dest_type: &DestinationType,
     title: &str,
@@ -4599,11 +4583,9 @@ mod threshold_validation_tests {
 mod send_path_tests {
     use config::meta::destinations::{Endpoint, HTTPType, Template, TemplateKind};
 
-    #[cfg(feature = "enterprise")]
-    use super::incident_path_notified;
     use super::{
-        NotificationOutcome, all_workflows_failed, choose_template, send_discord_with_attachment,
-        send_http_notification,
+        NotificationOutcome, all_workflows_failed, choose_template, incident_path_notified,
+        send_discord_with_attachment, send_http_notification,
     };
     use crate::{
         alerts::notifications::platform::{Platform, send_resolve},
@@ -4778,6 +4760,17 @@ mod send_path_tests {
                 }
             },
         );
+    }
+
+    #[cfg(not(feature = "enterprise"))]
+    #[test]
+    fn incidents_oss_repeat_suppresses_manual_direct_notification() {
+        assert!(incident_path_notified(
+            &config::meta::alerts::incidents::IncidentCorrelationOutcome::ExistingAlertRepeated {
+                incident_id: "i1".into(),
+                service_name: String::new(),
+            }
+        ));
     }
 
     #[cfg(feature = "enterprise")]

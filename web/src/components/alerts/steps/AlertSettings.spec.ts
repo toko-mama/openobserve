@@ -275,10 +275,6 @@ describe("AlertSettings — descendant (binds into ancestor OForm) mode", () => 
   });
 });
 
-// ── Creates Incident: enterprise/cloud + incidents_enabled only ─────────────
-// Incidents is an enterprise feature: the OSS backend always reports
-// `incidents_enabled: false`, and the enterprise one only correlates when it
-// is on. The toggle follows the same gate as the Incidents menu.
 describe("AlertSettings — Creates Incident toggle visibility", () => {
   const original = { isEnterprise: config.isEnterprise, isCloud: config.isCloud };
   afterEach(() => {
@@ -288,7 +284,7 @@ describe("AlertSettings — Creates Incident toggle visibility", () => {
 
   it.each([
     ["hidden in OSS with the flag off", "false", "false", false, false],
-    ["hidden in OSS even with the flag on", "false", "false", true, false],
+    ["shown in OSS with Incidents enabled", "false", "false", true, true],
     ["hidden in enterprise with Incidents disabled", "true", "false", false, false],
     ["hidden in enterprise before /config loads", "true", "false", undefined, false],
     ["shown in enterprise with Incidents enabled", "true", "false", true, true],

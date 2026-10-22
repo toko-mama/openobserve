@@ -43,7 +43,6 @@ pub async fn dispatch_recovery(alert: &Alert, event: &RecoveryEvent) {
         );
     }
 
-    #[cfg(feature = "enterprise")]
     if let Err(e) = crate::alerts::incidents::resolve_alert_firing(event).await {
         log::error!(
             "[RECOVERY] incident consumer failed for {}: {e}",

@@ -1140,6 +1140,7 @@ export interface TelemetryCorrelationDashboardProps {
   ftsFields?: string[]; // Full text search fields from the source stream (used for trace_id extraction from log body)
   mode?: "dialog" | "embedded-tabs"; // Render mode: 'dialog' = full dialog, 'embedded-tabs' = just tabs content for DetailTable
   externalActiveTab?: string; // For embedded-tabs mode, allows parent to control active tab
+  semanticGroupsEnabled?: boolean;
   hideDimensionFilters?: boolean; // Hide dimension filters in embedded-tabs mode
   metricGroupDefinitions?: MetricGroupDefinition[]; // Override the default Infra/Network/Others groups
   panelWidth?: number; // Override default panel width (grid units) for metric panels
@@ -1151,6 +1152,7 @@ export interface TelemetryCorrelationDashboardProps {
 const props = withDefaults(defineProps<TelemetryCorrelationDashboardProps>(), {
   mode: "dialog",
   externalActiveTab: "logs",
+  semanticGroupsEnabled: true,
 });
 
 const emit = defineEmits<{
@@ -2957,7 +2959,7 @@ watch(
     if (newVal) {
       // Load semantic groups first (required for applyUnstableDimensionDefaults)
       // Note: pendingDimensions and activeDimensions are now managed by the props watcher below
-      await loadSemanticGroups();
+      if (props.semanticGroupsEnabled) await loadSemanticGroups();
 
       // Re-apply defaults now that semantic groups are loaded
       // Check if there are ANY unstable dimensions (either in additionalDimensions OR matchedDimensions with _o2_all_)

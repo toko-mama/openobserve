@@ -14,7 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use config::meta::alerts::incidents::IncidentEvent;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+};
 
 use crate::{
     db::{get_orm_client_ro, get_orm_client_rw},
@@ -297,13 +299,22 @@ pub async fn append(
     event: IncidentEvent,
 ) -> Result<(), sea_orm::DbErr> {
     let db = get_orm_client_rw().await;
-
     let txn = db.begin().await?;
+    append_in_transaction(&txn, org_id, incident_id, event).await?;
+    txn.commit().await?;
+    Ok(())
+}
 
+pub async fn append_in_transaction<C: ConnectionTrait>(
+    txn: &C,
+    org_id: &str,
+    incident_id: &str,
+    event: IncidentEvent,
+) -> Result<(), sea_orm::DbErr> {
     let row = incident_events::Entity::find()
         .filter(incident_events::Column::OrgId.eq(org_id))
         .filter(incident_events::Column::IncidentId.eq(incident_id))
-        .one(&txn)
+        .one(txn)
         .await?;
 
     match row {
@@ -314,7 +325,7 @@ pub async fn append(
 
             let mut active: incident_events::ActiveModel = model.into();
             active.events = Set(events_json);
-            active.update(&txn).await?;
+            active.update(txn).await?;
         }
         None => {
             // Row doesn't exist yet (incident created before events table)
@@ -324,11 +335,10 @@ pub async fn append(
                 incident_id: Set(incident_id.to_string()),
                 events: Set(events_json),
             };
-            model.insert(&txn).await?;
+            model.insert(txn).await?;
         }
     }
 
-    txn.commit().await?;
     Ok(())
 }
 
@@ -344,13 +354,32 @@ pub async fn record_alert(
     triggered_at: i64,
 ) -> Result<(), sea_orm::DbErr> {
     let db = get_orm_client_rw().await;
-
     let txn = db.begin().await?;
+    record_alert_in_transaction(
+        &txn,
+        org_id,
+        incident_id,
+        alert_id,
+        alert_name,
+        triggered_at,
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(())
+}
 
+pub async fn record_alert_in_transaction<C: ConnectionTrait>(
+    txn: &C,
+    org_id: &str,
+    incident_id: &str,
+    alert_id: &str,
+    alert_name: &str,
+    triggered_at: i64,
+) -> Result<(), sea_orm::DbErr> {
     let row = incident_events::Entity::find()
         .filter(incident_events::Column::OrgId.eq(org_id))
         .filter(incident_events::Column::IncidentId.eq(incident_id))
-        .one(&txn)
+        .one(txn)
         .await?;
 
     match row {
@@ -380,7 +409,7 @@ pub async fn record_alert(
 
             let mut active: incident_events::ActiveModel = model.into();
             active.events = Set(events_json);
-            active.update(&txn).await?;
+            active.update(txn).await?;
         }
         None => {
             // Row doesn't exist yet
@@ -390,11 +419,10 @@ pub async fn record_alert(
                 incident_id: Set(incident_id.to_string()),
                 events: Set(encode_events(&events)?),
             };
-            model.insert(&txn).await?;
+            model.insert(txn).await?;
         }
     }
 
-    txn.commit().await?;
     Ok(())
 }
 

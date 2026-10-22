@@ -212,6 +212,8 @@ struct ConfigResponse<'a> {
     query_values_default_num: i64,
     alert_preview_timerange_minutes: i64,
     incidents_enabled: bool,
+    incidents_ai_enabled: bool,
+    incidents_topology_enabled: bool,
     service_streams_enabled: bool,
     model_pricing_enabled: bool,
     online_evals_enabled: bool,
@@ -477,7 +479,9 @@ pub async fn zo_config(
     let custom_hide_self_logo = enterprise_value!(false, o2cfg.common.custom_hide_self_logo);
     // AI needs o2-ai to answer; with no agent target its buttons could only fail, so report it off.
     let ai_enabled = enterprise_value!(false, o2cfg.ai.enabled && o2cfg.ai.has_agent_target());
-    let incidents_enabled = enterprise_value!(false, o2cfg.incidents.enabled);
+    let incidents_enabled = enterprise_value!(cfg.oss_incidents.enabled, o2cfg.incidents.enabled);
+    let incidents_ai_enabled = enterprise_value!(false, true);
+    let incidents_topology_enabled = enterprise_value!(false, true);
     let service_streams_enabled = enterprise_value!(false, o2cfg.service_streams.enabled);
     // Anomaly detection is on when the enterprise feature is compiled in, unless turned off at
     // runtime via O2_ANOMALY_DETECTION_DISABLED. When disabled the UI hides the anomaly tab.
@@ -607,6 +611,8 @@ pub async fn zo_config(
         query_values_default_num: cfg.limit.query_values_default_num,
         alert_preview_timerange_minutes: cfg.limit.alert_preview_timerange_minutes,
         incidents_enabled,
+        incidents_ai_enabled,
+        incidents_topology_enabled,
         service_streams_enabled,
         model_pricing_enabled: cfg.common.model_pricing_enabled,
         online_evals_enabled,
@@ -2452,5 +2458,23 @@ mod tests {
             serde_json::Value::Bool(cfg.common.product_analytics_enabled)
         );
         assert_eq!(json["product_analytics_enabled"], false);
+    }
+    #[cfg(not(feature = "enterprise"))]
+    #[tokio::test]
+    async fn test_zo_config_serves_oss_incidents_without_ai_or_topology() {
+        let response = zo_config(Path("default".to_owned()), None)
+            .await
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["incidents_enabled"],
+            config::get_config().oss_incidents.enabled
+        );
+        assert_eq!(json["incidents_ai_enabled"], false);
+        assert_eq!(json["incidents_topology_enabled"], false);
+        assert_eq!(json["ai_enabled"], false);
     }
 }

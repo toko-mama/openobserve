@@ -69,6 +69,16 @@ describe("MainLayout — Product Analytics menu entry", () => {
     return wrapper.findAllComponents(NavbarStub)[0].props("linksList") as NavItem[];
   };
 
+  it.each([true, false])("OSS incident navigation follows capability %s", async (enabled) => {
+    store.state.zoConfig.incidents_enabled = enabled;
+    const items = await railItems();
+    expect(items.some((item) => item.name === "incidentList")).toBe(enabled);
+    store.state.zoConfig.incidents_enabled = !enabled;
+    await flushPromises();
+    const updated = wrapper!.findAllComponents(NavbarStub)[0].props("linksList") as NavItem[];
+    expect(updated.some((item) => item.name === "incidentList")).toBe(!enabled);
+  });
+
   beforeEach(() => {
     store.state.zoConfig.product_analytics_enabled = true;
   });
@@ -76,6 +86,7 @@ describe("MainLayout — Product Analytics menu entry", () => {
   afterEach(() => {
     wrapper?.unmount();
     wrapper = undefined;
+    store.state.zoConfig.incidents_enabled = false;
     store.state.zoConfig.custom_hide_menus = "";
     store.state.zoConfig.synthetics_enabled = false;
     store.state.zoConfig.product_analytics_enabled = false;

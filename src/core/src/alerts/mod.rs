@@ -54,6 +54,9 @@ pub mod external_alerts;
 pub mod grouping;
 #[cfg(feature = "enterprise")]
 pub mod incidents;
+#[cfg(not(feature = "enterprise"))]
+#[path = "incidents_oss.rs"]
+pub mod incidents;
 pub mod notifications;
 #[cfg(feature = "enterprise")]
 pub mod org_config;

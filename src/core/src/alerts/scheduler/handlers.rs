@@ -74,6 +74,72 @@ pub(crate) struct AnomalyRunRecord {
     pub(crate) end_us: i64,
 }
 
+#[cfg(not(feature = "enterprise"))]
+pub(crate) async fn correlate_scheduled_incident(
+    alert: &config::meta::alerts::alert::Alert,
+    data: Option<&[json::Map<String, json::Value>]>,
+    outcome: &RunOutcome,
+    delivery: DeliveryDecision,
+    triggered_at: i64,
+    eval_level: Option<config::meta::alerts::level::AlertLevel>,
+) -> Result<Option<config::meta::alerts::incidents::IncidentCorrelationOutcome>, anyhow::Error> {
+    if !matches!(outcome, RunOutcome::Firing)
+        || matches!(
+            delivery,
+            DeliveryDecision::NotFiring | DeliveryDecision::SuppressedByPending
+        )
+    {
+        return Ok(None);
+    }
+    let Some(rows) = data else {
+        return Ok(None);
+    };
+    let empty_row = json::Map::new();
+    let row = rows.first().unwrap_or(&empty_row);
+    let synthetic_rows = [empty_row.clone()];
+    let notify_rows = if !delivery.should_deliver() {
+        &[][..]
+    } else if rows.is_empty() {
+        &synthetic_rows
+    } else {
+        rows
+    };
+    crate::alerts::incidents::correlate_alert_to_incident(
+        alert,
+        row,
+        notify_rows,
+        triggered_at,
+        eval_level,
+    )
+    .await
+}
+
+#[cfg(not(feature = "enterprise"))]
+pub(crate) fn scheduled_incident_outcome(
+    alert: &config::meta::alerts::alert::Alert,
+    previous: Option<&config::meta::alerts::state::AlertState>,
+    matched: bool,
+    now: i64,
+) -> RunOutcome {
+    if !matched {
+        return RunOutcome::Normal;
+    }
+    if !alert.query_condition.multi_alert_enabled() && alert.pending_period_sec > 0 {
+        let pending =
+            previous.is_none_or(|state| match (state.last_outcome.as_ref(), state.since) {
+                (None | Some(RunOutcome::Normal), _) => true,
+                (Some(RunOutcome::Pending), Some(since)) => {
+                    now.saturating_sub(since) < alert.pending_period_sec.saturating_mul(1_000_000)
+                }
+                _ => false,
+            });
+        if pending {
+            return RunOutcome::Pending;
+        }
+    }
+    RunOutcome::Firing
+}
+
 /// Returns `false` on a failed write; the per-group caller MUST check it or it dispatches stale.
 #[must_use]
 async fn persist_alert_run_state(
@@ -1007,6 +1073,33 @@ async fn handle_composite_alert_trigger(
                 Some(true),
             )
         };
+        #[cfg(not(feature = "enterprise"))]
+        let notification_alert = composite_notification_alert(&definition.definition);
+        #[cfg(not(feature = "enterprise"))]
+        let rows = [composite_notification_row(
+            &definition.definition.expression,
+            evaluated.result,
+            &evaluated.children,
+        )];
+        #[cfg(not(feature = "enterprise"))]
+        let incident_handled = correlate_scheduled_incident(
+            &notification_alert,
+            Some(&rows),
+            &outcome,
+            delivery,
+            now,
+            Some(evaluated.level),
+        )
+        .await
+        .map(|outcome| outcome.is_some())
+        .unwrap_or_else(|error| {
+            log::error!(
+                "[COMPOSITE_ALERT] incident correlation failed for {}/{}: {error}",
+                trigger.org,
+                definition.definition.id
+            );
+            false
+        });
         if delivery.should_deliver()
             && (!definition
                 .definition
@@ -1019,19 +1112,20 @@ async fn handle_composite_alert_trigger(
                     .as_array()
                     .is_none_or(Vec::is_empty))
         {
+            #[cfg(feature = "enterprise")]
             let notification_alert = composite_notification_alert(&definition.definition);
+            #[cfg(feature = "enterprise")]
             let notification_row = composite_notification_row(
                 &definition.definition.expression,
                 evaluated.result,
                 &evaluated.children,
             );
+            #[cfg(feature = "enterprise")]
             let rows = [notification_row];
 
             #[cfg(feature = "enterprise")]
             let incident_handled = if notification_alert.creates_incident
-                && o2_enterprise::enterprise::common::config::get_config()
-                    .incidents
-                    .enabled
+                && crate::alerts::alert::incidents_enabled()
             {
                 crate::alerts::incidents::correlate_alert_to_incident(
                     &notification_alert,
@@ -1053,8 +1147,6 @@ async fn handle_composite_alert_trigger(
             } else {
                 false
             };
-            #[cfg(not(feature = "enterprise"))]
-            let incident_handled = false;
 
             #[cfg(feature = "enterprise")]
             {
@@ -1223,7 +1315,7 @@ async fn handle_composite_alert_trigger(
     Ok(())
 }
 
-fn should_dispatch_after_incident(
+pub(crate) fn should_dispatch_after_incident(
     incident_destinations_handled: bool,
     has_workflows: bool,
 ) -> bool {
@@ -1233,31 +1325,7 @@ fn should_dispatch_after_incident(
 fn composite_notification_alert(
     definition: &infra::table::entity::alert_composites::Model,
 ) -> config::meta::alerts::alert::Alert {
-    let mut alert = config::meta::alerts::alert::Alert::default();
-    alert.id = svix_ksuid::Ksuid::from_str(&definition.id).ok();
-    alert.org_id = definition.org.clone();
-    alert.name = definition.name.clone();
-    alert.description = definition.description.clone().unwrap_or_default();
-    alert.destinations =
-        serde_json::from_value(definition.destinations.clone()).unwrap_or_default();
-    alert.template = definition.template.clone();
-    alert.context_attributes = definition
-        .context_attributes
-        .clone()
-        .and_then(|value| serde_json::from_value(value).ok());
-    alert.creates_incident = definition.creates_incident;
-    alert.workflows = serde_json::from_value(definition.workflows.clone()).unwrap_or_default();
-    alert.priority = definition
-        .priority
-        .and_then(config::meta::alerts::priority::AlertPriority::from_i32);
-    alert.tags = definition
-        .tags
-        .clone()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
-    alert.trigger_condition.silence = definition.silence_seconds;
-    alert.pending_period_sec = definition.pending_period_sec;
-    alert
+    crate::alerts::composite::notification_alert(definition)
 }
 
 fn composite_notification_row(
@@ -2738,10 +2806,30 @@ async fn handle_alert_triggers(
     let condition_matched = trigger_results.data.is_some();
     let payload_empty = trigger_results.data.as_ref().is_none_or(|d| d.is_empty());
 
+    #[cfg(not(feature = "enterprise"))]
+    let delivery = if alert.creates_incident && crate::alerts::alert::incidents_enabled() {
+        let outcome =
+            scheduled_incident_outcome(&alert, last_states.get(""), condition_matched, now);
+        if matches!(outcome, RunOutcome::Pending) {
+            trigger_data_stream.status = outcome;
+            new_trigger.next_run_at = alert.trigger_condition.get_next_trigger_time(
+                true,
+                alert.tz_offset,
+                false,
+                None,
+            )?;
+            new_trigger.is_silenced = false;
+            trigger_data_stream.next_run_at = new_trigger.next_run_at;
+            DeliveryDecision::SuppressedByPending
+        } else {
+            delivery
+        }
+    } else {
+        delivery
+    };
+
     // What this evaluation DELIVERED, not what it decided to: the episode opens on a landed send.
     let mut episode_delivered = false;
-    // Only the enterprise correlation block assigns this.
-    #[cfg_attr(not(feature = "enterprise"), allow(unused_mut))]
     let mut episode_incident_id: Option<String> = None;
     // Read-or-mint BEFORE the send: a resolve only matches a key the vendor saw on the trigger.
     let episode_key: Option<String> = if alert.notify_on_recovery
@@ -2761,7 +2849,43 @@ async fn handle_alert_triggers(
         None
     };
 
-    if let Some(data) = trigger_results.data
+    #[cfg(not(feature = "enterprise"))]
+    let incident_handled_notification = match correlate_scheduled_incident(
+        &alert,
+        trigger_results.data.as_deref(),
+        &trigger_data_stream.status,
+        delivery,
+        triggered_at,
+        eval_level,
+    )
+    .await
+    {
+        Ok(Some(outcome)) => {
+            episode_incident_id = Some(outcome.incident_id().to_string());
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            log::error!(
+                "[SCHEDULER trace_id {scheduler_trace_id}] incident correlation failed for {}/{}: {error}",
+                new_trigger.org,
+                alert.name
+            );
+            false
+        }
+    };
+    #[cfg(not(feature = "enterprise"))]
+    let notification_data = trigger_results.data.map(|rows| {
+        if rows.is_empty() && alert.creates_incident && crate::alerts::alert::incidents_enabled() {
+            vec![json::Map::new()]
+        } else {
+            rows
+        }
+    });
+    #[cfg(feature = "enterprise")]
+    let notification_data = trigger_results.data;
+
+    if let Some(data) = notification_data
         && !data.is_empty()
         // Suppressed deliveries still record state and history; only the
         // notification is skipped.
@@ -3160,9 +3284,7 @@ async fn handle_alert_triggers(
 
         #[cfg(feature = "enterprise")]
         let incident_handled_notification = if alert.creates_incident
-            && o2_enterprise::enterprise::common::config::get_config()
-                .incidents
-                .enabled
+            && crate::alerts::alert::incidents_enabled()
             && let Some(first_row) = data.first()
         {
             match crate::alerts::incidents::correlate_alert_to_incident(
@@ -3208,9 +3330,6 @@ async fn handle_alert_triggers(
         } else {
             false
         };
-
-        #[cfg(not(feature = "enterprise"))]
-        let incident_handled_notification = false;
 
         // Asked after correlation, not predicted: a prediction suppresses a page nobody made.
         #[cfg(feature = "enterprise")]

@@ -279,6 +279,42 @@ const useEnterpriseRoutes = () => {
     },
   );
 
+  routes.push(
+    {
+      path: "incidents",
+      name: "incidentList",
+      component: IncidentList,
+      meta: {
+        titleKey: "menu.incidents",
+        allowOnEmptyData: true,
+      },
+      beforeEnter(to: any, from: any, next: any) {
+        if (store.state.zoConfig?.incidents_enabled === false) {
+          next("/");
+          return;
+        }
+        routeGuard(to, from, next);
+      },
+    },
+    {
+      path: "incidents/:id",
+      alias: "alerts/incidents/:id",
+      name: "incidentDetail",
+      component: () => import("@/components/alerts/IncidentDetailDrawer.vue"),
+      meta: {
+        titleKey: "routeTitles.incidentDetail",
+        allowOnEmptyData: true,
+      },
+      beforeEnter(to: any, from: any, next: any) {
+        if (store.state.zoConfig?.incidents_enabled === false) {
+          next("/");
+          return;
+        }
+        routeGuard(to, from, next);
+      },
+    },
+  );
+
   //the below are the routes that we support for enterprise and cloud
   //the above are the routes that we support for oss including both enterprise and cloud
 
@@ -364,31 +400,6 @@ const useEnterpriseRoutes = () => {
         meta: { titleKey: "oncall.routingTitle", allowOnEmptyData: true },
         beforeEnter(to: any, from: any, next: any) {
           oncallRouteGuard(to, from, next);
-        },
-      },
-    );
-
-    routes.push(
-      {
-        path: "incidents",
-        name: "incidentList",
-        component: IncidentList,
-        meta: {
-          titleKey: "menu.incidents",
-        },
-        beforeEnter(to: any, from: any, next: any) {
-          routeGuard(to, from, next);
-        },
-      },
-      {
-        path: "incidents/:id",
-        name: "incidentDetail",
-        component: () => import("@/components/alerts/IncidentDetailDrawer.vue"),
-        meta: {
-          titleKey: "routeTitles.incidentDetail",
-        },
-        beforeEnter(to: any, from: any, next: any) {
-          routeGuard(to, from, next);
         },
       },
     );

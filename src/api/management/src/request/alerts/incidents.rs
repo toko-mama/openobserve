@@ -88,6 +88,7 @@ impl IncidentStatus {
 /// Ensures only one field can be updated per request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
+#[cfg_attr(not(feature = "enterprise"), serde(deny_unknown_fields))]
 pub enum UpdatePayload {
     /// Update incident title
     Title { title: String },
@@ -890,8 +891,14 @@ pub async fn get_incident_events(Path((org_id, incident_id)): Path<(String, Stri
 
 /// Get incident events timeline (OSS)
 #[cfg(not(feature = "enterprise"))]
-pub async fn get_incident_events(_path: Path<(String, String)>) -> Response {
-    MetaHttpResponse::forbidden("Not Supported")
+pub async fn get_incident_events(Path((org_id, incident_id)): Path<(String, String)>) -> Response {
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    match openobserve_core::alerts::incidents::get_events(&org_id, &incident_id).await {
+        Ok(events) => MetaHttpResponse::json(serde_json::json!({ "events": events })),
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 /// Post a comment on an incident
@@ -921,11 +928,33 @@ pub async fn post_incident_comment(
 /// Post a comment (OSS)
 #[cfg(not(feature = "enterprise"))]
 pub async fn post_incident_comment(
-    _path: Path<(String, String)>,
-    _headers: Headers<UserEmail>,
-    _body: Json<CommentRequest>,
+    Path((org_id, incident_id)): Path<(String, String)>,
+    Headers(actor): Headers<UserEmail>,
+    body: Result<Json<CommentRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    MetaHttpResponse::forbidden("Not Supported")
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(error) => return MetaHttpResponse::bad_request(error.body_text()),
+    };
+    if body.comment.trim().is_empty() || body.comment.trim().chars().count() > 10_000 {
+        return MetaHttpResponse::bad_request(
+            "Comment must contain between 1 and 10000 characters",
+        );
+    }
+    match openobserve_core::alerts::incidents::add_comment(
+        &org_id,
+        &incident_id,
+        &actor.user_id,
+        &body.comment,
+    )
+    .await
+    {
+        Ok(()) => MetaHttpResponse::ok("Comment added"),
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -968,7 +997,7 @@ pub async fn trigger_incident_rca(_path: Path<(String, String)>) -> Response {
     tag = "Incidents",
     operation_id = "ListIncidents",
     summary = "List alert incidents",
-    description = "Retrieves a list of correlated alert incidents. This endpoint is only available with enterprise features enabled.",
+    description = "Retrieves a list of correlated alert incidents. Available when incident management is enabled.",
     security(("Authorization" = [])),
     params(
         ("org_id" = String, Path, description = "Organization name"),
@@ -983,12 +1012,42 @@ pub async fn trigger_incident_rca(_path: Path<(String, String)>) -> Response {
         ("x-o2-mcp" = json!({"description": "List all incidents", "category": "alerts"}))
     )
 )]
-pub async fn list_incidents(_path: Path<String>, _query: Query<ListIncidentsQuery>) -> Response {
-    // Only supported with enterprise features enabled
-    MetaHttpResponse::json(ListIncidentsResponse {
-        incidents: vec![],
-        total: 0,
-    })
+pub async fn list_incidents(
+    Path(org_id): Path<String>,
+    query: Result<Query<ListIncidentsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => return MetaHttpResponse::bad_request(error.body_text()),
+    };
+    if !(1..=500).contains(&query.limit) || query.offset > i64::MAX as u64 {
+        return MetaHttpResponse::bad_request(
+            "Limit must be between 1 and 500 and offset must fit a signed integer",
+        );
+    }
+    if let Some(status) = &query.status
+        && status
+            .parse::<config::meta::alerts::incidents::IncidentStatus>()
+            .is_err()
+    {
+        return MetaHttpResponse::bad_request("Invalid incident status");
+    }
+    match openobserve_core::alerts::incidents::list_incidents(
+        &org_id,
+        query.status.as_deref(),
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
+        Ok((incidents, total)) => {
+            MetaHttpResponse::json(ListIncidentsResponse { incidents, total })
+        }
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 #[cfg(not(feature = "enterprise"))]
@@ -999,7 +1058,7 @@ pub async fn list_incidents(_path: Path<String>, _query: Query<ListIncidentsQuer
     tag = "Incidents",
     operation_id = "GetIncident",
     summary = "Get incident details",
-    description = "Retrieves detailed information about a specific incident. This endpoint is only available with enterprise features enabled.",
+    description = "Retrieves detailed information about a specific incident. Available when incident management is enabled.",
     security(("Authorization" = [])),
     params(
         ("org_id" = String, Path, description = "Organization name"),
@@ -1014,8 +1073,16 @@ pub async fn list_incidents(_path: Path<String>, _query: Query<ListIncidentsQuer
         ("x-o2-mcp" = json!({"description": "Get an incident's details", "category": "alerts"}))
     )
 )]
-pub async fn get_incident(_path: Path<(String, String)>) -> Response {
-    MetaHttpResponse::forbidden("Not Supported")
+pub async fn get_incident(Path((org_id, incident_id)): Path<(String, String)>) -> Response {
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    match openobserve_core::alerts::incidents::get_incident_with_alerts(&org_id, &incident_id).await
+    {
+        Ok(Some(incident)) => MetaHttpResponse::json(incident),
+        Ok(None) => MetaHttpResponse::not_found("Incident not found"),
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 #[cfg(not(feature = "enterprise"))]
@@ -1053,7 +1120,7 @@ pub async fn get_external_alert_payload(_path: Path<(String, String)>) -> Respon
     tag = "Incidents",
     operation_id = "GetIncidentStats",
     summary = "Get incident statistics",
-    description = "Retrieves statistics about incidents. This endpoint is only available with enterprise features enabled.",
+    description = "Retrieves statistics about incidents. Available when incident management is enabled.",
     security(("Authorization" = [])),
     params(
         ("org_id" = String, Path, description = "Organization name"),
@@ -1067,8 +1134,14 @@ pub async fn get_external_alert_payload(_path: Path<(String, String)>) -> Respon
         ("x-o2-mcp" = json!({"description": "Get incident statistics", "category": "alerts"}))
     )
 )]
-pub async fn get_incident_stats(_path: Path<String>) -> Response {
-    MetaHttpResponse::forbidden("Not Supported")
+pub async fn get_incident_stats(Path(org_id): Path<String>) -> Response {
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    match openobserve_core::alerts::incidents::get_incident_stats(&org_id).await {
+        Ok(stats) => MetaHttpResponse::json(stats),
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 #[cfg(not(feature = "enterprise"))]
@@ -1079,7 +1152,7 @@ pub async fn get_incident_stats(_path: Path<String>) -> Response {
     tag = "Incidents",
     operation_id = "UpdateIncident",
     summary = "Update incident fields",
-    description = "Updates incident title, severity, or status. This endpoint is only available with enterprise features enabled.",
+    description = "Updates incident title, severity, or status. Available when incident management is enabled.",
     security(("Authorization" = [])),
     params(
         ("org_id" = String, Path, description = "Organization name"),
@@ -1096,10 +1169,62 @@ pub async fn get_incident_stats(_path: Path<String>) -> Response {
     )
 )]
 pub async fn update_incident(
-    _path: Path<(String, String)>,
-    _body: Json<UpdatePayload>,
+    Path((org_id, incident_id)): Path<(String, String)>,
+    Headers(actor): Headers<UserEmail>,
+    body: Result<Json<UpdatePayload>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    MetaHttpResponse::forbidden("Not Supported")
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(error) => return MetaHttpResponse::bad_request(error.body_text()),
+    };
+    let result = match body {
+        UpdatePayload::Title { title } => {
+            if title.trim().is_empty() || title.trim().chars().count() > 500 {
+                return MetaHttpResponse::bad_request(
+                    "Title must contain between 1 and 500 characters",
+                );
+            }
+            openobserve_core::alerts::incidents::update_title(
+                &org_id,
+                &incident_id,
+                &title,
+                &actor.user_id,
+            )
+            .await
+        }
+        UpdatePayload::Status { status } => {
+            openobserve_core::alerts::incidents::update_status(
+                &org_id,
+                &incident_id,
+                status.as_str(),
+                &actor.user_id,
+            )
+            .await
+        }
+        UpdatePayload::Severity { severity } => {
+            return match openobserve_core::alerts::incidents::update_severity(
+                &org_id,
+                &incident_id,
+                severity.as_str(),
+                &actor.user_id,
+            )
+            .await
+            {
+                Ok(incident) => MetaHttpResponse::json(UpdateSeverityResponse {
+                    incident,
+                    analysis_in_flight: false,
+                }),
+                Err(error) => oss_incident_error(error),
+            };
+        }
+    };
+    match result {
+        Ok(incident) => MetaHttpResponse::json(incident),
+        Err(error) => oss_incident_error(error),
+    }
 }
 
 #[cfg(not(feature = "enterprise"))]
@@ -1160,9 +1285,216 @@ pub async fn get_incident_rca_history(_path: Path<(String, String)>) -> Response
     })
 }
 
+#[cfg(not(feature = "enterprise"))]
+fn oss_incident_error(error: anyhow::Error) -> Response {
+    match error.to_string().as_str() {
+        "Incident not found" => MetaHttpResponse::not_found("Incident not found"),
+        "Only open incidents can be acknowledged" => MetaHttpResponse::bad_request(error),
+        _ => MetaHttpResponse::internal_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "enterprise"))]
+    #[tokio::test]
+    async fn oss_incidents_reject_invalid_input_before_storage() {
+        let response = list_incidents(
+            Path("default".into()),
+            Ok(Query(ListIncidentsQuery {
+                status: None,
+                limit: 0,
+                offset: 0,
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let response = update_incident(
+            Path(("default".into(), "missing".into())),
+            Headers(UserEmail {
+                user_id: "actor@example.com".into(),
+            }),
+            Ok(Json(UpdatePayload::Title { title: "  ".into() })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let response = post_incident_comment(
+            Path(("default".into(), "missing".into())),
+            Headers(UserEmail {
+                user_id: "actor@example.com".into(),
+            }),
+            Ok(Json(CommentRequest {
+                comment: " ".into(),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(not(feature = "enterprise"))]
+    #[tokio::test]
+    async fn oss_incidents_reject_malformed_and_ambiguous_update_bodies() {
+        use axum::extract::FromRequest;
+        for body in [
+            r#"{"severity":"P5"}"#,
+            r#"{"status":"unknown"}"#,
+            r#"{"title":"title","status":"resolved"}"#,
+            "{",
+        ] {
+            let request = axum::http::Request::builder()
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            let body = Json::<UpdatePayload>::from_request(request, &()).await;
+            let response = update_incident(
+                Path(("default".into(), "missing".into())),
+                Headers(UserEmail {
+                    user_id: "actor@example.com".into(),
+                }),
+                body,
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+        for (status, limit, offset) in [
+            (None, 501, 0),
+            (None, 1, u64::MAX),
+            (Some("unknown".into()), 1, 0),
+        ] {
+            let response = list_incidents(
+                Path("default".into()),
+                Ok(Query(ListIncidentsQuery {
+                    status,
+                    limit,
+                    offset,
+                })),
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[cfg(not(feature = "enterprise"))]
+    #[tokio::test]
+    async fn oss_incidents_handlers_keep_organization_and_actor() {
+        use sea_orm::{ConnectionTrait, Schema};
+        std::fs::create_dir_all(&config::get_config().common.data_db_dir).unwrap();
+        let db = infra::db::get_orm_client_rw().await;
+        let schema = Schema::new(db.get_database_backend());
+        for mut statement in [
+            schema.create_table_from_entity(infra::table::entity::alert_incidents::Entity),
+            schema.create_table_from_entity(infra::table::entity::alert_incident_alerts::Entity),
+            schema.create_table_from_entity(infra::table::entity::incident_events::Entity),
+        ] {
+            db.execute(db.get_database_backend().build(statement.if_not_exists()))
+                .await
+                .unwrap();
+        }
+        let org = format!("api-oss-{}", uuid::Uuid::new_v4());
+        let incident = infra::table::alert_incidents::create(
+            &org,
+            "P3",
+            serde_json::json!({}),
+            "alert_id",
+            1,
+            Some("API incident".into()),
+        )
+        .await
+        .unwrap();
+        let path = || Path((org.clone(), incident.id.clone()));
+        let actor = || {
+            Headers(UserEmail {
+                user_id: "authenticated@example.com".into(),
+            })
+        };
+        let response = get_incident(Path(("other-org".into(), incident.id.clone()))).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = get_incident_events(Path(("other-org".into(), incident.id.clone()))).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = update_incident(
+            Path(("other-org".into(), incident.id.clone())),
+            actor(),
+            Ok(Json(UpdatePayload::Status {
+                status: IncidentStatus::Resolved,
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = post_incident_comment(
+            Path(("other-org".into(), incident.id.clone())),
+            actor(),
+            Ok(Json(CommentRequest {
+                comment: "unauthorized".into(),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = update_incident(
+            path(),
+            actor(),
+            Ok(Json(UpdatePayload::Status {
+                status: IncidentStatus::Acknowledged,
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = post_incident_comment(
+            path(),
+            actor(),
+            Ok(Json(CommentRequest {
+                comment: "investigating".into(),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let events = openobserve_core::alerts::incidents::get_events(&org, &incident.id)
+            .await
+            .unwrap();
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(serialized.contains("authenticated@example.com"));
+        assert!(serialized.contains("investigating"));
+        assert!(!serialized.contains("unauthorized"));
+        let response = update_incident(
+            path(),
+            actor(),
+            Ok(Json(UpdatePayload::Severity {
+                severity: IncidentSeverity::P3,
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["analysis_in_flight"], false);
+        assert_eq!(body["severity"], "P3");
+        let response = list_incidents(
+            Path(org.clone()),
+            Ok(Query(ListIncidentsQuery {
+                status: Some("acknowledged".into()),
+                limit: 50,
+                offset: 0,
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["total"], 1);
+        let response = get_incident_stats(Path(org.clone())).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        infra::table::incident_events::delete_by_org(&org)
+            .await
+            .unwrap();
+        infra::table::alert_incidents::delete_by_org(&org)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn test_default_limit() {

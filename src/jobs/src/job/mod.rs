@@ -43,6 +43,9 @@ pub(crate) mod files;
 mod flatten_compactor;
 #[cfg(feature = "enterprise")]
 mod incidents;
+#[cfg(not(feature = "enterprise"))]
+#[path = "incidents_oss.rs"]
+mod incidents;
 mod leader;
 #[cfg(feature = "enterprise")]
 mod llm_experiment_cleanup;
@@ -742,7 +745,6 @@ pub async fn init() -> Result<(), anyhow::Error> {
     // enterprise-only, but this rollup works on ordinary database spans and is
     // identical in both builds (design §5/§7).
     tokio::task::spawn(db_monitoring::run());
-    #[cfg(feature = "enterprise")]
     tokio::task::spawn(incidents::run());
     // Register enterprise callbacks before durable consumers and scheduler startup.
     // HTTP/background work can land on querier, ingester, or scheduler nodes,

@@ -30,6 +30,7 @@ import { PA_ROUTES } from "@/utils/rum/productAnalyticsRoutes";
 export const GATE_PREDICATES: Record<string, (c: NavGateContext) => boolean> = {
   // Settings (isEnt = enterprise only)
   enterprise: (c) => c.isEnterprise,
+  enterpriseOrCloud: (c) => c.isEnterprise || c.isCloud,
   enterpriseMeta: (c) => c.isEnterprise && c.isMeta,
   cloudMeta: (c) => c.isCloud && c.isMeta,
   storage: (c) => c.isEnterprise && (!c.isCloud || c.orgStorage),
@@ -232,6 +233,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
         icon: "webhook",
         name: "alertSources",
         requires: "incidentList",
+        gate: "enterpriseOrCloud",
       },
     ],
   },

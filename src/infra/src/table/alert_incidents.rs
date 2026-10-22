@@ -18,8 +18,8 @@
 //! Provides CRUD operations for incidents and incident-alert associations.
 
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
     sea_query::{Expr, LockType},
 };
 use svix_ksuid::KsuidLike;
@@ -85,6 +85,28 @@ pub async fn create(
 ) -> Result<alert_incidents::Model, errors::Error> {
     let client = get_orm_client_rw().await;
 
+    new_incident(
+        org_id,
+        severity,
+        group_values,
+        key_type,
+        first_alert_at,
+        title,
+    )
+    .insert(client)
+    .await
+    .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))
+}
+
+pub async fn create_in_transaction<C: ConnectionTrait>(
+    client: &C,
+    org_id: &str,
+    severity: &str,
+    group_values: serde_json::Value,
+    key_type: &str,
+    first_alert_at: i64,
+    title: Option<String>,
+) -> Result<alert_incidents::Model, errors::Error> {
     new_incident(
         org_id,
         severity,
@@ -182,14 +204,36 @@ pub async fn add_alert_to_incident(
     correlation_reason: &str,
 ) -> Result<bool, errors::Error> {
     let client = get_orm_client_rw().await;
-    let now = chrono::Utc::now().timestamp_micros();
-
-    // Use transaction for atomic update
     let txn = client
         .begin()
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
+    let is_new = add_alert_in_transaction(
+        &txn,
+        incident_id,
+        alert_id,
+        alert_name,
+        alert_kind,
+        alert_fired_at,
+        correlation_reason,
+    )
+    .await?;
+    txn.commit()
+        .await
+        .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
+    Ok(is_new)
+}
 
+pub async fn add_alert_in_transaction<C: ConnectionTrait>(
+    txn: &C,
+    incident_id: &str,
+    alert_id: &str,
+    alert_name: &str,
+    alert_kind: &str,
+    alert_fired_at: i64,
+    correlation_reason: &str,
+) -> Result<bool, errors::Error> {
+    let now = chrono::Utc::now().timestamp_micros();
     // Lock the incident row first so that concurrent transactions serialise on
     // it. Without this lock, two READ COMMITTED transactions can both read
     // prior_count == 0 before either commits (the PK includes alert_fired_at,
@@ -198,7 +242,7 @@ pub async fn add_alert_to_incident(
     // already serialises writes there).
     let incident = alert_incidents::Entity::find_by_id(incident_id)
         .lock(LockType::Update)
-        .one(&txn)
+        .one(txn)
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?
         .ok_or_else(|| Error::DbError(DbError::SeaORMError("Incident not found".to_string())))?;
@@ -209,7 +253,7 @@ pub async fn add_alert_to_incident(
     let prior_count = alert_incident_alerts::Entity::find()
         .filter(alert_incident_alerts::Column::IncidentId.eq(incident_id))
         .filter(alert_incident_alerts::Column::AlertId.eq(alert_id))
-        .count(&txn)
+        .count(txn)
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
     let is_new_alert_type = prior_count == 0;
@@ -227,7 +271,7 @@ pub async fn add_alert_to_incident(
     };
 
     alert_link
-        .insert(&txn)
+        .insert(txn)
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
 
@@ -236,11 +280,7 @@ pub async fn add_alert_to_incident(
     active.last_alert_at = Set(alert_fired_at.max(active.last_alert_at.unwrap()));
     active.updated_at = Set(now);
     active
-        .update(&txn)
-        .await
-        .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
-
-    txn.commit()
+        .update(txn)
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))?;
 
@@ -375,6 +415,8 @@ pub async fn list(
         .column(alert_incidents::Column::AlertCount)
         .column(alert_incidents::Column::Title)
         .column(alert_incidents::Column::AssignedTo)
+        .column(alert_incidents::Column::AcknowledgedBy)
+        .column(alert_incidents::Column::AcknowledgedAt)
         .column(alert_incidents::Column::CreatedAt)
         .column(alert_incidents::Column::UpdatedAt)
         .filter(alert_incidents::Column::OrgId.eq(org_id))
@@ -384,10 +426,10 @@ pub async fn list(
         query = query.filter(alert_incidents::Column::Status.eq(s));
     }
 
-    let page_size = limit.max(1);
     query
-        .paginate(client, page_size)
-        .fetch_page(offset / page_size)
+        .limit(limit.max(1))
+        .offset(offset)
+        .all(client)
         .await
         .map_err(|e| Error::DbError(DbError::SeaORMError(e.to_string())))
 }

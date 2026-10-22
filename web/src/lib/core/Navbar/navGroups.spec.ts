@@ -54,6 +54,21 @@ const infraGroup = (entries: RailEntry[]) =>
   );
 
 describe("groupNavLinks", () => {
+  it("keeps external alert ingestion out of the OSS incident navigation", () => {
+    const entries = groupNavLinks(
+      [link("alertList"), link("incidentList")],
+      undefined,
+      (gate) => gate !== "enterpriseOrCloud" && gate !== "oncall",
+    );
+    const reliability = entries.find(
+      (entry) => entry.type === "linkGroup" && entry.item.name === "reliability",
+    );
+    expect(reliability?.type).toBe("linkGroup");
+    if (reliability?.type !== "linkGroup") throw new Error("Missing incident navigation");
+    expect(reliability.children.some((child) => child.name === "incidentList")).toBe(true);
+    expect(reliability.children.some((child) => child.name === "alertSources")).toBe(false);
+  });
+
   it("preserves the input (main-branch) order", () => {
     const input = [
       link("home"),

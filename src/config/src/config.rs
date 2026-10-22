@@ -1034,8 +1034,34 @@ pub struct Config {
     pub slo: Slo,
     pub synthetics: Synthetics,
     pub alert_composite: AlertComposite,
+    pub oss_incidents: OssIncidents,
     pub db_monitoring: DatabaseMonitoring,
     pub self_profiles: SelfProfiles,
+}
+
+#[derive(Debug, Serialize, EnvConfig, Default)]
+pub struct OssIncidents {
+    #[env_config(name = "ZO_OSS_INCIDENTS_ENABLED", default = true)]
+    pub enabled: bool,
+    #[env_config(name = "ZO_OSS_INCIDENTS_GROUPING_FIELDS", default = "")]
+    pub grouping_fields: String,
+    #[env_config(name = "ZO_OSS_INCIDENTS_AUTO_RESOLVE_TIMEOUT_SECS", default = 0)]
+    pub auto_resolve_timeout_secs: u64,
+}
+
+impl OssIncidents {
+    pub fn grouping_fields(&self) -> Vec<String> {
+        let mut fields: Vec<String> = self
+            .grouping_fields
+            .split(',')
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(str::to_owned)
+            .collect();
+        fields.sort();
+        fields.dedup();
+        fields
+    }
 }
 
 /// Background self CPU/memory profile ingest into `_meta.self_profiles`.
@@ -3719,6 +3745,8 @@ pub fn init() -> Config {
     }
     let mut cfg = Config::init().expect("config init error");
 
+    cfg.oss_incidents.enabled &= cfg.common.local_mode;
+
     // set local mode
     if cfg.common.local_mode {
         cfg.common.node_role = "all".to_string();
@@ -4961,6 +4989,16 @@ pub fn ensure_not_empty(s: &str, name: &str) -> Result<(), anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oss_incident_grouping_fields_are_explicit_and_canonical() {
+        let settings = super::OssIncidents {
+            grouping_fields: "service, environment,service,, ".into(),
+            ..Default::default()
+        };
+        assert_eq!(settings.grouping_fields(), ["environment", "service"]);
+        assert_eq!(settings.auto_resolve_timeout_secs, 0);
+    }
+
     /// Every `#[env_config]` default must parse.
     ///
     /// The macro reads defaults from a **string literal**, so a Rust digit

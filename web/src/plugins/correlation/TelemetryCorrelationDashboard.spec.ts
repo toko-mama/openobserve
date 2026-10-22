@@ -20,6 +20,8 @@ import TelemetryCorrelationDashboard from "./TelemetryCorrelationDashboard.vue";
 import store from "@/test/unit/helpers/store";
 import { nextTick } from "vue";
 
+const mockLoadSemanticGroups = vi.hoisted(() => vi.fn());
+
 const mockFetchQueryDataWithHttpStream = vi.fn();
 const mockCancelStreamQueryBasedOnRequestId = vi.fn();
 
@@ -54,7 +56,7 @@ vi.mock("@/composables/useMetricsCorrelationDashboard", () => ({
 vi.mock("@/composables/useServiceCorrelation", () => ({
   useServiceCorrelation: vi.fn(() => ({
     semanticGroups: { value: [] },
-    loadSemanticGroups: vi.fn(),
+    loadSemanticGroups: mockLoadSemanticGroups,
   })),
 }));
 
@@ -319,6 +321,12 @@ describe("TelemetryCorrelationDashboard.vue", () => {
     if (wrapper) {
       wrapper.unmount();
     }
+  });
+
+  it("renders OSS source telemetry without requesting semantic groups", async () => {
+    wrapper = createWrapper({ semanticGroupsEnabled: false });
+    await flushPromises();
+    expect(mockLoadSemanticGroups).not.toHaveBeenCalled();
   });
 
   describe("Component Mounting", () => {

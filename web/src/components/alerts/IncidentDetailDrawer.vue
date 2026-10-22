@@ -144,11 +144,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
             data-test="incident-activity-tab"
           />
           <OTab
+            v-if="capabilities.ai"
             name="incidentAnalysis"
             :label="t('alerts.incidents.incidentAnalysis')"
             data-test="incident-analysis-tab"
           />
           <OTab
+            v-if="capabilities.topology"
             name="serviceGraph"
             :label="t('alerts.incidents.alertGraph')"
             data-test="incident-alert-graph-tab"
@@ -177,7 +179,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         <div class="flex flex-1 overflow-hidden">
           <!-- Left Column: Incident Details (only show on Incident Analysis tab, HIDDEN for Overview) -->
           <div
-            v-if="activeTab === 'incidentAnalysis'"
+            v-if="capabilities.ai && activeTab === 'incidentAnalysis'"
             class="order-1 flex h-full w-100 max-w-100 min-w-100 flex-shrink-0 flex-col"
           >
             <!-- Table of Contents (only on Incident Analysis) -->
@@ -248,6 +250,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
                   <!-- 3. Affected Services Card -->
                   <div
+                    v-if="capabilities.topology"
                     class="border-card-glass-border rounded-default bg-card-glass-bg flex flex-1 cursor-pointer flex-col justify-between border p-3 transition-all duration-200"
                   >
                     <!-- Top: Title and Icon -->
@@ -590,7 +593,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                          nobody, which is also the OSS and on-call-disabled
                          case, so no feature flag is needed. -->
                     <div
-                      v-if="oncallResponse"
+                      v-if="capabilities.oncall && oncallResponse"
                       class="border-card-glass-border rounded-default bg-card-glass-bg flex min-h-0 shrink flex-col overflow-hidden border"
                       data-test="incident-oncall-panel"
                     >
@@ -934,7 +937,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
               <!-- Incident Analysis Tab Content -->
               <IncidentRCAAnalysis
-                v-if="activeTab === 'incidentAnalysis'"
+                v-if="capabilities.ai && activeTab === 'incidentAnalysis'"
                 :has-existing-rca="hasExistingRca"
                 :rca-loading="rcaLoading"
                 :rca-stream-content="rcaStreamContent"
@@ -956,7 +959,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
               />
 
               <!-- Service Graph Tab Content -->
-              <div v-if="activeTab === 'serviceGraph'" class="absolute inset-0">
+              <div
+                v-if="capabilities.topology && activeTab === 'serviceGraph'"
+                class="absolute inset-0"
+              >
                 <IncidentServiceGraph
                   v-if="incidentDetails"
                   :topology-context="incidentDetails.topology_context"
@@ -1345,6 +1351,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 >
                   <TelemetryCorrelationDashboard
                     mode="embedded-tabs"
+                    :semantic-groups-enabled="capabilities.topology"
                     :externalActiveTab="'metrics'"
                     :serviceName="correlationData.serviceName"
                     :matchedDimensions="correlationData.matchedDimensions"
@@ -1446,6 +1453,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 >
                   <TelemetryCorrelationDashboard
                     mode="embedded-tabs"
+                    :semantic-groups-enabled="capabilities.topology"
                     :externalActiveTab="'traces'"
                     :serviceName="correlationData.serviceName"
                     :matchedDimensions="correlationData.matchedDimensions"
@@ -1485,6 +1493,8 @@ import {
 } from "vue";
 import { raw, useI18nTyped } from "@/types/i18n";
 import { useStore } from "vuex";
+import config from "@/aws-exports";
+import { incidentCapabilities } from "@/utils/incidentCapabilities";
 import { useTheme } from "@/composables/useTheme";
 import { useRouter, useRoute } from "vue-router";
 import { isAxiosError } from "axios";
@@ -1563,6 +1573,12 @@ export default defineComponent({
   setup(props, { emit }) {
     const { t } = useI18nTyped();
     const store = useStore();
+    const capabilities = computed(() =>
+      incidentCapabilities(
+        store.state.zoConfig ?? {},
+        config.isEnterprise === "true" || config.isCloud === "true",
+      ),
+    );
     const router = useRouter();
     const route = useRoute();
     const { confirm } = useConfirmDialog();
@@ -1766,6 +1782,7 @@ export default defineComponent({
     const rcaAnalyzedAt = ref<number | null>(null);
 
     const loadRcaHistory = async (incidentId: string) => {
+      if (!capabilities.value.ai) return;
       try {
         const org = store.state.selectedOrganization.identifier;
         const response = await incidentsService.getRcaHistory(org, incidentId);
@@ -1812,6 +1829,7 @@ export default defineComponent({
     });
 
     const checkAnalysisInFlight = async (incidentId: string) => {
+      if (!capabilities.value.ai) return;
       try {
         const org = store.state.selectedOrganization.identifier;
         const response = await incidentsService.getEvents(org, incidentId);
@@ -2110,6 +2128,20 @@ export default defineComponent({
     // Fetch correlated telemetry streams
     const fetchCorrelatedStreams = async (force: boolean = false) => {
       if (!incidentDetails.value) return;
+      if (!capabilities.value.topology) {
+        correlationLoading.value = true;
+        correlationError.value = null;
+        try {
+          await buildFallbackCorrelation(
+            store.state.selectedOrganization.identifier,
+            incidentDetails.value,
+            force,
+          );
+        } finally {
+          correlationLoading.value = false;
+        }
+        return;
+      }
 
       // Skip if already loaded and not forcing refresh
       if (!force && correlationData.value) return;
@@ -2182,14 +2214,15 @@ export default defineComponent({
         const schemaFields = new Set<string>(schemaFieldsArray.map((f: any) => f.name));
 
         // Step 3: Get semantic groups to resolve dimension names to field patterns
-        const semanticGroupsResponse = await serviceStreamsApi.getSemanticGroups(org);
-        const semanticGroups = semanticGroupsResponse.data;
+        const semanticGroups = capabilities.value.topology
+          ? (await serviceStreamsApi.getSemanticGroups(org)).data
+          : [];
 
         const filters: Record<string, string> = {};
 
         // Step 4: For each dimension, find the matching schema field
         for (const [dimId, dimValue] of Object.entries(groupValues)) {
-          let matchedField = null;
+          let matchedField = !capabilities.value.topology && schemaFields.has(dimId) ? dimId : null;
 
           // Get semantic group
           const group = semanticGroups.find((g: any) => g.id === dimId);
@@ -2203,12 +2236,12 @@ export default defineComponent({
                 // Don't break - keep logging all fields for debugging
               }
             }
-          } else {
+          } else if (capabilities.value.topology) {
             console.warn(`[Fallback Correlation] No semantic group found for: ${dimId}`);
           }
 
           // Fallback: If semantic group didn't work, scan schema directly by pattern
-          if (!matchedField) {
+          if (capabilities.value.topology && !matchedField) {
             console.warn(
               `[Fallback Correlation] Semantic group failed, scanning schema fields directly...`,
             );
@@ -2233,7 +2266,7 @@ export default defineComponent({
           }
         }
 
-        if (Object.keys(filters).length === 0) {
+        if (capabilities.value.topology && Object.keys(filters).length === 0) {
           console.warn("[Fallback Correlation] No dimensions could be mapped to stream fields");
           return;
         }
@@ -2288,7 +2321,7 @@ export default defineComponent({
         fetchCorrelatedStreams();
       }
       // Switching to the Analysis tab re-checks in-flight state without polling
-      if (newTab === "incidentAnalysis" && incidentDetails.value?.id) {
+      if (capabilities.value.ai && newTab === "incidentAnalysis" && incidentDetails.value?.id) {
         checkAnalysisInFlight(incidentDetails.value.id);
       }
     });
@@ -2561,7 +2594,7 @@ export default defineComponent({
         const response = await incidentsService.get(org, incidentId);
 
         incidentDetails.value = response.data;
-        void loadOnCallResponse(org, incidentId);
+        if (capabilities.value.oncall) void loadOnCallResponse(org, incidentId);
         triggers.value = response.data.triggers || [];
         // Composites have no `alerts` row, so the live-definition resolver
         // returns them under `composite_alerts`; merge so the name-based
@@ -2572,20 +2605,21 @@ export default defineComponent({
         editableStatus.value = response.data.status;
         editableSeverity.value = response.data.severity;
 
-        // Load semantic groups for display name mapping
-        try {
-          const semanticGroupsResponse = await serviceStreamsApi.getSemanticGroups(org);
-          semanticGroups.value = semanticGroupsResponse.data || [];
-        } catch (semanticError) {
-          console.warn("Failed to load semantic groups:", semanticError);
-          semanticGroups.value = [];
-        }
+        // Semantic dimension names are provided by the topology service.
+        if (capabilities.value.topology)
+          try {
+            const semanticGroupsResponse = await serviceStreamsApi.getSemanticGroups(org);
+            semanticGroups.value = semanticGroupsResponse.data || [];
+          } catch (semanticError) {
+            console.warn("Failed to load semantic groups:", semanticError);
+            semanticGroups.value = [];
+          }
 
         // Check if a background AI analysis is already running
-        await checkAnalysisInFlight(incidentId);
+        if (capabilities.value.ai) await checkAnalysisInFlight(incidentId);
 
         // Load superseded reports so the version picker is populated
-        await loadRcaHistory(incidentId);
+        if (capabilities.value.ai) await loadRcaHistory(incidentId);
       } catch (error) {
         console.error("Failed to load incident details:", error);
         toast({
@@ -2624,7 +2658,7 @@ export default defineComponent({
     watch(
       incidentContextData,
       (contextData) => {
-        if (contextData) {
+        if (capabilities.value.ai && contextData) {
           const incidentProvider = createIncidentsContextProvider(contextData, store);
           contextRegistry.register("incidents", incidentProvider);
           contextRegistry.setActive("incidents");
@@ -3021,7 +3055,7 @@ export default defineComponent({
         store.dispatch("incidents/setShouldRefresh", true);
 
         // Handle reanalysis prompt based on in-flight state
-        if ("analysis_in_flight" in data) {
+        if (capabilities.value.ai && "analysis_in_flight" in data) {
           analysisInFlight.value = !!data.analysis_in_flight;
           if (data.analysis_in_flight) {
             toast({
@@ -3540,7 +3574,7 @@ export default defineComponent({
         // Reload incident to get the saved RCA in topology context, and pick up the
         // report this run just superseded.
         await loadDetails(incidentId);
-        await loadRcaHistory(incidentId);
+        if (capabilities.value.ai) await loadRcaHistory(incidentId);
       } catch (error: any) {
         rcaStreamContent.value = "";
 
@@ -3599,7 +3633,7 @@ export default defineComponent({
             t("alerts.incidents.rcaCancelFailed"),
         });
         // Resync from the event log — the run may have finished while we were cancelling.
-        await checkAnalysisInFlight(incidentId);
+        if (capabilities.value.ai) await checkAnalysisInFlight(incidentId);
       } finally {
         rcaCancelling.value = false;
       }
@@ -3609,7 +3643,9 @@ export default defineComponent({
     const getCorrelationMethodLabel = (keyType: string | undefined) => {
       switch (keyType?.toLowerCase()) {
         case "primary":
-          return t("alerts.incidents.correlatedByServiceDiscovery");
+          return capabilities.value.topology
+            ? t("alerts.incidents.correlatedByServiceDiscovery")
+            : t("alerts.incidents.correlatedByConfiguredFields");
         case "secondary":
           return t("alerts.incidents.correlatedBySemanticGroups");
         case "alert_id":
@@ -3620,6 +3656,7 @@ export default defineComponent({
     };
 
     return {
+      capabilities,
       raw,
       t,
       store,

@@ -197,6 +197,48 @@ pub async fn get_stream_alerts(
     }
 }
 
+pub(crate) async fn send_realtime_notification(
+    alert: &Alert,
+    trace_id: &str,
+    rows: &[Map<String, Value>],
+    now: i64,
+) -> std::result::Result<crate::alerts::alert::NotificationOutcome, anyhow::Error> {
+    #[cfg(not(feature = "enterprise"))]
+    let incident_handled = if alert.creates_incident
+        && crate::alerts::alert::incidents_enabled()
+        && let Some(row) = rows.first()
+    {
+        match crate::alerts::incidents::correlate_alert_to_incident(alert, row, rows, now, None)
+            .await
+        {
+            Ok(outcome) => outcome.is_some(),
+            Err(error) => {
+                log::error!(
+                    "[REALTIME] Incident correlation failed for {}/{}; falling back to alert notification: {error}",
+                    alert.org_id,
+                    alert.name
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    #[cfg(feature = "enterprise")]
+    let incident_handled = false;
+    if incident_handled && alert.workflows.is_empty() {
+        return Ok(crate::alerts::alert::NotificationOutcome::default());
+    }
+    let skip = if incident_handled {
+        alert.destinations.as_slice()
+    } else {
+        &[]
+    };
+    Ok(alert
+        .send_notification(trace_id, rows, now, None, now, None, None, None, skip, None)
+        .await?)
+}
+
 pub async fn evaluate_trigger(triggers: TriggerAlertData) {
     if triggers.is_empty() {
         return;
@@ -235,10 +277,7 @@ pub async fn evaluate_trigger(triggers: TriggerAlertData) {
             alert.org_id,
             alert.name
         );
-        match alert
-            .send_notification(&trace_id, val, now, None, now, None, None, None, &[], None)
-            .await
-        {
+        match send_realtime_notification(alert, &trace_id, val, now).await {
             Err(e) => {
                 log::error!("Failed to send notification: {e}");
                 trigger_data_stream.status = RunOutcome::NotifyFailed;

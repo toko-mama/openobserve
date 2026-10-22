@@ -100,6 +100,9 @@ import { nextTick } from "vue";
 import i18n from "@/locales";
 import store from "@/test/unit/helpers/store";
 import router from "@/test/unit/helpers/router";
+import config from "@/aws-exports";
+import { queryClient } from "@/composables/query/queryClient";
+import { streamSchemaQuery } from "@/services/stream.queries";
 
 // Test data factory
 const createIncident = (overrides: Partial<Incident> = {}): Incident => ({
@@ -261,6 +264,64 @@ describe("IncidentDetailDrawer.vue", () => {
   afterEach(() => {
     if (wrapper) {
       wrapper.unmount();
+    }
+  });
+
+  it("OSS renders lifecycle tabs without AI, topology or background enterprise requests", async () => {
+    config.isEnterprise = "false";
+    config.isCloud = "false";
+    try {
+      wrapper = await createWrapper({}, { zoConfig: { incidents_enabled: true } }, "oss-1");
+      await flushPromises();
+      expect(wrapper.find('[data-test="incident-overview-tab"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="incident-activity-tab"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="incident-alert-triggers-tab"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="incident-analysis-tab"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="incident-alert-graph-tab"]').exists()).toBe(false);
+      expect(serviceStreamsApi.getSemanticGroups).not.toHaveBeenCalled();
+      expect(oncallService.listResponsesForIncident).not.toHaveBeenCalled();
+      expect(incidentsService.getEvents).not.toHaveBeenCalled();
+      await wrapper.vm.updateSeverity("P3");
+      expect(mockConfirm).not.toHaveBeenCalled();
+      expect(incidentsService.triggerRca).not.toHaveBeenCalled();
+    } finally {
+      config.isEnterprise = "true";
+    }
+  });
+
+  it("OSS telemetry uses the source stream and exact grouping fields without topology APIs", async () => {
+    config.isEnterprise = "false";
+    const warning = vi.spyOn(console, "warn");
+    const sourceAlert = { ...createAlert(), stream_type: "logs", stream_name: "application" };
+    vi.mocked(incidentsService.get).mockResolvedValue({
+      data: createIncidentWithAlerts({
+        alerts: [sourceAlert],
+        group_values: { service: "checkout" },
+        key_type: "Primary",
+      }),
+    });
+    queryClient.setQueryData(streamSchemaQuery("default", "application", "logs").queryKey, {
+      schema: [{ name: "service" }],
+    });
+    try {
+      wrapper = await createWrapper({}, { zoConfig: { incidents_enabled: true } }, "oss-telemetry");
+      await flushPromises();
+      wrapper.vm.activeTab = "logs";
+      await flushPromises();
+      expect(wrapper.vm.correlationData.logStreams).toEqual([
+        { stream_name: "application", stream_type: "Logs", filters: { service: "checkout" } },
+      ]);
+      expect(incidentsService.getCorrelatedStreams).not.toHaveBeenCalled();
+      expect(serviceStreamsApi.getSemanticGroups).not.toHaveBeenCalled();
+      expect
+        .soft(warning)
+        .not.toHaveBeenCalledWith(expect.stringContaining("No semantic group found"));
+      expect
+        .soft(wrapper.vm.getCorrelationMethodLabel("Primary"))
+        .toBe("Configured grouping fields");
+    } finally {
+      warning.mockRestore();
+      config.isEnterprise = "true";
     }
   });
 

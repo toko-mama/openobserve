@@ -7929,6 +7929,7 @@
       "rawPayloadError": "Failed to load the raw payload for this alert",
       "externalSourceTooltip": "Triggered by external alert source(s)",
       "correlatedByServiceDiscovery": "Dimensions",
+      "correlatedByConfiguredFields": "Configured grouping fields",
       "correlatedBySemanticGroups": "Dimensions",
       "correlatedByAlertId": "Alert ID",
       "errorLoading": "Failed to load incidents",

@@ -254,6 +254,7 @@ import { useStore } from "vuex";
 import { useTheme } from "@/composables/useTheme";
 import { useRouter, RouterView } from "vue-router";
 import config from "../aws-exports";
+import { incidentCapabilities } from "@/utils/incidentCapabilities";
 
 import { setLanguage } from "../utils/cookies";
 import { getLocale } from "../locales";
@@ -429,12 +430,13 @@ export default defineComponent({
       : undefined;
     const selectedOrg = ref(store.state.selectedOrganization);
     const userClickedOrg = ref(store.state.selectedOrganization);
-    const isIncidentsEnabled = computed(() => {
-      return (
-        (config.isEnterprise == "true" || config.isCloud == "true") &&
-        store.state.zoConfig.incidents_enabled
-      );
-    });
+    const isIncidentsEnabled = computed(
+      () =>
+        incidentCapabilities(
+          store.state.zoConfig,
+          config.isEnterprise === "true" || config.isCloud === "true",
+        ).enabled,
+    );
 
     // Workflows — enterprise/cloud only (FD3). Build-time gate, no runtime flag.
     // Enterprise/cloud build AND the backend `/config` flag `workflows_enabled`
@@ -771,6 +773,10 @@ export default defineComponent({
     });
 
     const updateIncidentsMenu = () => {
+      if (!isIncidentsEnabled.value) {
+        linksList.value = linksList.value.filter((link) => link.name !== "incidentList");
+        return;
+      }
       if (isIncidentsEnabled.value) {
         const alertIndex = linksList.value.findIndex((link) => link.name === "alertList");
 
@@ -786,6 +792,8 @@ export default defineComponent({
         }
       }
     };
+
+    watch(isIncidentsEnabled, () => filterMenus(), { immediate: false });
 
     const updateProductAnalyticsMenu = () => {
       const existingIndex = linksList.value.findIndex((l: any) => l.name === "productAnalytics");

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import useEnterpriseRoutes from "./useEnterpriseRoutes";
+import { createRouter, createMemoryHistory } from "vue-router";
+import store from "@/stores";
 import enLocale from "@/locales/languages/en-US.json";
 
 /** Every `meta.titleKey` in a route tree, children included. */
@@ -94,6 +96,24 @@ describe("useEnterpriseRoutes.ts", () => {
     const config = await import("@/aws-exports");
     config.default.isCloud = "false";
     config.default.isEnterprise = "false";
+  });
+
+  it("resolves OSS incident notification URLs and guards disabled capability", () => {
+    const routes = useEnterpriseRoutes();
+    const router = createRouter({
+      history: createMemoryHistory("/web/"),
+      routes: [{ path: "/", children: routes }],
+    });
+    const resolved = router.resolve("/alerts/incidents/incident-123?org_identifier=acme");
+    expect(resolved.name).toBe("incidentDetail");
+    expect(resolved.params.id).toBe("incident-123");
+    expect(resolved.query.org_identifier).toBe("acme");
+    const detail = routes.find((route: { name?: string }) => route.name === "incidentDetail");
+    const next = vi.fn();
+    store.state.zoConfig.incidents_enabled = false;
+    detail.beforeEnter({}, {}, next);
+    expect(next).toHaveBeenCalledWith("/");
+    delete store.state.zoConfig.incidents_enabled;
   });
 
   describe("Basic Functionality", () => {
@@ -258,9 +278,9 @@ describe("useEnterpriseRoutes.ts", () => {
     });
 
     // Test 20: iam + synthetics + its 6 sub-routes, all of which ship in OSS.
-    it("should have 8 routes in basic configuration", () => {
+    it("should have 10 routes in basic configuration", () => {
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8);
+      expect(routes.length).toBe(10);
     });
 
     // Synthetics moved out of `o2_enterprise` into `src/synthetics`; only the
@@ -720,7 +740,7 @@ describe("useEnterpriseRoutes.ts", () => {
       config.default.isEnterprise = undefined;
 
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8); // Basic routes only: iam + synthetics + its 6 sub-routes
+      expect(routes.length).toBe(10); // Basic routes only: iam + synthetics + its 6 sub-routes
     });
 
     // Test 63: Should handle config with null values
@@ -730,7 +750,7 @@ describe("useEnterpriseRoutes.ts", () => {
       config.default.isEnterprise = null;
 
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8); // Basic routes only: iam + synthetics + its 6 sub-routes
+      expect(routes.length).toBe(10); // Basic routes only: iam + synthetics + its 6 sub-routes
     });
 
     // Test 64: Should handle config with non-string values
@@ -740,7 +760,7 @@ describe("useEnterpriseRoutes.ts", () => {
       config.default.isEnterprise = false;
 
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8); // Only adds enterprise routes when string "true"
+      expect(routes.length).toBe(10); // Only adds enterprise routes when string "true"
     });
 
     // Test 65: Should handle config with empty string values
@@ -750,7 +770,7 @@ describe("useEnterpriseRoutes.ts", () => {
       config.default.isEnterprise = "";
 
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8); // Basic routes only: iam + synthetics + its 6 sub-routes
+      expect(routes.length).toBe(10); // Basic routes only: iam + synthetics + its 6 sub-routes
     });
 
     // Test 66: Should handle mixed string cases
@@ -760,7 +780,7 @@ describe("useEnterpriseRoutes.ts", () => {
       config.default.isEnterprise = "TRUE";
 
       const routes = useEnterpriseRoutes();
-      expect(routes.length).toBe(8); // Case sensitive: only "true" adds enterprise routes
+      expect(routes.length).toBe(10); // Case sensitive: only "true" adds enterprise routes
     });
 
     // Test 67: Should maintain iam route as first element

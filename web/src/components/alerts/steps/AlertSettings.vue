@@ -384,6 +384,7 @@ import { computed, defineComponent, inject, ref, type PropType } from "vue";
 import { useI18nTyped, type I18nKey } from "@/types/i18n";
 import { useStore } from "vuex";
 import config from "@/aws-exports";
+import { incidentCapabilities } from "@/utils/incidentCapabilities";
 import OFormInput from "@/lib/forms/Input/OFormInput.vue";
 import OFormSwitch from "@/lib/forms/Switch/OFormSwitch.vue";
 import OSelect from "@/lib/forms/Select/OSelect.vue";
@@ -466,12 +467,12 @@ export default defineComponent({
     const { t } = useI18nTyped();
     const store = useStore();
 
-    // Same gate as the Incidents menu: enterprise/cloud build AND the backend
-    // /config flag. `=== true` keeps it hidden while /config is still loading.
     const incidentsEnabled = computed(
       () =>
-        (config.isEnterprise === "true" || config.isCloud === "true") &&
-        store.state.zoConfig?.incidents_enabled === true,
+        incidentCapabilities(
+          store.state.zoConfig ?? {},
+          config.isEnterprise === "true" || config.isCloud === "true",
+        ).enabled,
     );
 
     // Field refs consumed by the parent's AlertFocusManager (registered off the
