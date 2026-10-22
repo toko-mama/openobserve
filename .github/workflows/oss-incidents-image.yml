@@ -1,0 +1,145 @@
+name: OSS incidents amd64 verification artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-incidents-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      NODE_OPTIONS: "--max-old-space-size=6144"
+      DS_CONTENT_REF: "700dcc51f6cb3aff32c5ef1733008456e14d0f38"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Check native architecture and available disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test ! -e .env
+          df -h .
+          free -h
+          available_kib=$(df -Pk . | awk 'NR == 2 {print $4}')
+          test "$available_kib" -ge 20971520
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev clang cmake
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: nightly-2026-05-20
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "21.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install and verify frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run format:check
+          npm run lint:ci -- --quiet
+          npm run type-check:app
+          npx vitest run src/utils/incidentCapabilities.spec.ts src/components/alerts/steps/AlertSettings.spec.ts src/components/alerts/IncidentDetailDrawer.spec.ts src/composables/shared/useEnterpriseRoutes.spec.ts src/layouts/MainLayout.nav.spec.ts src/plugins/correlation/TelemetryCorrelationDashboard.spec.ts src/services/incidents.spec.ts src/stores/incidents.spec.ts src/lib/core/Navbar/navGroups.spec.ts --maxWorkers=1
+          npm run build
+          test -s dist/index.html
+          test -d dist/src/assets
+
+      - name: Verify and build OSS debug binary with embedded frontend
+        env:
+          ZO_DATA_DIR: ${{ runner.temp }}/oss-incidents-cargo-data/
+        run: |
+          cargo fmt --all -- --check
+          cargo test -p openobserve-core incidents_oss --lib --locked
+          cargo test -p openobserve-api-management incidents --lib --locked
+          cargo clippy --workspace --all-targets -- -W clippy::too_many_lines -W clippy::cognitive_complexity -W clippy::excessive_nesting -D warnings
+          cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed --target x86_64-unknown-linux-gnu
+
+      - name: Package native linux/amd64 image with minimal context
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_context=$(mktemp -d "$RUNNER_TEMP/oss-incidents-context.XXXXXX")
+          mkdir -p "$image_context/bin" artifacts
+          cp target/x86_64-unknown-linux-gnu/debug/openobserve "$image_context/bin/openobserve"
+          cp deploy/build/Dockerfile.pr "$image_context/Dockerfile"
+          source_revision=$(git rev-parse HEAD)
+          image_tag="oss-incidents:amd64-$source_revision"
+          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$source_revision" --tag "$image_tag" "$image_context"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_tag")" = linux/amd64
+          echo "OSS_INCIDENTS_IMAGE=$image_tag" >> "$GITHUB_ENV"
+          {
+            echo "source_revision=$source_revision"
+            echo "source_ref=$GITHUB_REF"
+            echo "source_version=$(git describe --tags --abbrev=0)"
+            echo "build_profile=debug"
+            echo "build_features=rust-embed-for-web/always-embed"
+            echo "image_tag=$image_tag"
+            echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            rustc --version
+            cargo --version
+            node --version
+            npm --version
+            protoc --version
+            sha256sum Cargo.lock web/package-lock.json
+          } > artifacts/build-metadata.txt
+          cp web/src/assets/ai-datasource-content/generated/.fetch.json artifacts/datasource-content.json
+          docker image inspect "$image_tag" > artifacts/image-inspect.json
+
+      - name: Smoke-test image against disposable local storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_data=$(mktemp -d "$RUNNER_TEMP/oss-incidents-smoke.XXXXXX")
+          export ZO_SMOKE_EMAIL=smoke@example.com
+          export ZO_SMOKE_PASSWORD
+          ZO_SMOKE_PASSWORD=$(openssl rand -hex 24)
+          container_id=$(docker run --detach --publish 127.0.0.1::5080 --mount "type=bind,src=$smoke_data,dst=/data" --env ZO_LOCAL_MODE=true --env ZO_LOCAL_MODE_STORAGE=disk --env ZO_META_STORE=sqlite --env ZO_DATA_DIR=/data/ --env ZO_OSS_INCIDENTS_ENABLED=true --env ZO_OSS_INCIDENTS_AUTO_RESOLVE_TIMEOUT_SECS=0 --env "ZO_ROOT_USER_EMAIL=$ZO_SMOKE_EMAIL" --env "ZO_ROOT_USER_PASSWORD=$ZO_SMOKE_PASSWORD" "$OSS_INCIDENTS_IMAGE")
+          trap 'docker logs "$container_id" > artifacts/container-smoke.log 2>&1; docker rm --force "$container_id" >/dev/null' EXIT
+          smoke_port=$(docker port "$container_id" 5080/tcp | awk -F: '{print $NF}')
+          python3 scripts/oss-incidents-smoke.py "http://127.0.0.1:$smoke_port"
+          docker restart "$container_id" >/dev/null
+          python3 scripts/oss-incidents-smoke.py "http://127.0.0.1:$smoke_port"
+
+      - name: Export Docker image archive and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save "$OSS_INCIDENTS_IMAGE" | gzip > artifacts/oss-incidents-linux-amd64.tar.gz
+          cd artifacts
+          sha256sum oss-incidents-linux-amd64.tar.gz > SHA256SUMS
+
+      - name: Upload image artifact without registry publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: oss-incidents-linux-amd64-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
