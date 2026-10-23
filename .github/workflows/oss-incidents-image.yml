@@ -12,16 +12,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      CARGO_BUILD_JOBS: "2"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_INCREMENTAL: "0"
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CYPRESS_INSTALL_BINARY: "0"
-      NODE_OPTIONS: "--max-old-space-size=6144"
-      DS_CONTENT_REF: "700dcc51f6cb3aff32c5ef1733008456e14d0f38"
+    runs-on: [mac-anang]
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
         with:
@@ -29,95 +21,8 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Check native architecture and available disk
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = x86_64
-          test ! -e .env
-          df -h .
-          free -h
-          available_kib=$(df -Pk . | awk 'NR == 2 {print $4}')
-          test "$available_kib" -ge 20971520
-
-      - name: Ensure native build dependencies
-        run: |
-          if command -v cc && command -v c++ && command -v clang && command -v cmake && command -v pkg-config && pkg-config --exists openssl; then
-            echo "Native build dependencies already available"
-          else
-            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 update
-            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 install -y --no-install-recommends build-essential pkg-config libssl-dev clang cmake
-          fi
-
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
-        with:
-          toolchain: nightly-2026-05-20
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: custom-native-amd64
-
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          version: "21.12"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build frontend
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npm run build-only
-          npm run copy
-          test -s dist/index.html
-          test -d dist/src/assets
-
-      - name: Build OSS debug binary with embedded frontend
-        run: cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed
-
-      - name: Package native linux/amd64 image with minimal context
-        shell: bash
-        run: |
-          set -euo pipefail
-          image_context=$(mktemp -d "$RUNNER_TEMP/oss-incidents-context.XXXXXX")
-          mkdir -p "$image_context/bin" artifacts
-          cp target/debug/openobserve "$image_context/bin/openobserve"
-          cp deploy/build/Dockerfile.pr "$image_context/Dockerfile"
-          source_revision=$(git rev-parse HEAD)
-          image_tag="oss-incidents:amd64-$source_revision"
-          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$source_revision" --tag "$image_tag" "$image_context"
-          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_tag")" = linux/amd64
-          echo "OSS_INCIDENTS_IMAGE=$image_tag" >> "$GITHUB_ENV"
-          {
-            echo "source_revision=$source_revision"
-            echo "source_ref=$GITHUB_REF"
-            echo "source_version=$(git describe --tags --abbrev=0)"
-            echo "build_profile=debug"
-            echo "build_features=rust-embed-for-web/always-embed"
-            echo "image_tag=$image_tag"
-            echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            rustc --version
-            cargo --version
-            node --version
-            npm --version
-            protoc --version
-            sha256sum Cargo.lock web/package-lock.json
-          } > artifacts/build-metadata.txt
-          cp web/src/assets/ai-datasource-content/generated/.fetch.json artifacts/datasource-content.json
-          docker image inspect "$image_tag" > artifacts/image-inspect.json
-
-      - name: Export Docker image archive and checksum
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker save "$OSS_INCIDENTS_IMAGE" | gzip > artifacts/oss-incidents-linux-amd64.tar.gz
-          cd artifacts
-          sha256sum oss-incidents-linux-amd64.tar.gz > SHA256SUMS
+      - name: Build Linux amd64 image using Docker Desktop
+        run: bash scripts/build-custom-image.sh
 
       - name: Upload image artifact without registry publication
         uses: actions/upload-artifact@v4

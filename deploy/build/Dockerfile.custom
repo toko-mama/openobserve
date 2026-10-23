@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+FROM node:24-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev clang libclang-dev cmake unzip \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly-2026-05-20
+RUN curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip -o /tmp/protoc.zip \
+    && unzip -q /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+WORKDIR /workspace
+COPY . .
+ENV CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_NET_GIT_FETCH_WITH_CLI=true
+ENV NODE_OPTIONS=--max-old-space-size=6144 CYPRESS_INSTALL_BINARY=0
+ENV DS_CONTENT_REF=700dcc51f6cb3aff32c5ef1733008456e14d0f38
+RUN --mount=type=cache,target=/root/.npm cd web && npm ci --no-audit --no-fund && npm run build-only && npm run copy
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/opt/cargo/git \
+    --mount=type=cache,target=/workspace/target \
+    cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed \
+    && mkdir /output && cp target/debug/openobserve /output/openobserve \
+    && cp web/src/assets/ai-datasource-content/generated/.fetch.json /output/datasource-content.json \
+    && { rustc --version; cargo --version; node --version; npm --version; protoc --version; sha256sum Cargo.lock web/package-lock.json; } > /output/toolchain.txt
+FROM scratch AS export
+COPY --from=builder /output/ /

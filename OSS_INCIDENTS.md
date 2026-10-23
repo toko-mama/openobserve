@@ -250,3 +250,7 @@ reviewed. Publication requires the chosen registry/tag, the validated amd64
 artifact, explicit approval to publish, and a recorded immutable registry digest.
 Only then prepare the deployment image reference and obtain approval to restart
 the VM. This handoff does not change the official production image reference.
+
+## Laptop runner
+
+The image workflow now uses `[self-hosted, mac-anang]` with Docker Desktop running. It invokes `bash scripts/build-custom-image.sh`, which builds a Linux amd64 debug binary inside Docker and uploads the same image archive. Docker caches dependencies locally. Keep the laptop awake; the first build on Apple Silicon uses amd64 emulation and may be slow. The earlier native Ubuntu procedure remains a manual alternative.
