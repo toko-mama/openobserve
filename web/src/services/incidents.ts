@@ -37,6 +37,7 @@ export interface Incident {
   group_values?: Record<string, string>;
   key_type?: "Primary" | "Secondary" | "AlertId";
   topology_context?: IncidentTopology;
+  error_tracking?: IncidentErrorTracking;
   first_alert_at: number;
   last_alert_at: number;
   resolved_at?: number;
@@ -47,6 +48,23 @@ export interface Incident {
   acknowledged_at?: number;
   created_at: number;
   updated_at: number;
+}
+
+export interface IncidentErrorTracking {
+  service: string;
+  exception_type: string;
+  message: string;
+  stacktrace: string;
+  operation: string;
+  occurrence_count: number;
+  first_seen: number;
+  last_seen: number;
+  latest_trace: {
+    trace_id: string;
+    span_id: string;
+    stream_name: string;
+    timestamp: number;
+  };
 }
 
 export interface IncidentTopology {

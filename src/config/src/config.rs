@@ -1041,6 +1041,8 @@ pub struct Config {
 
 #[derive(Debug, Serialize, EnvConfig, Default)]
 pub struct OssIncidents {
+    #[env_config(name = "ZO_OSS_TRACE_ERRORS_ENABLED", default = true)]
+    pub trace_errors_enabled: bool,
     #[env_config(name = "ZO_OSS_INCIDENTS_ENABLED", default = true)]
     pub enabled: bool,
     #[env_config(name = "ZO_OSS_INCIDENTS_GROUPING_FIELDS", default = "")]

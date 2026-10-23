@@ -1126,3 +1126,101 @@ fn incidents_oss_scheduler_empty_match_creates_incident_but_nonmatch_does_not() 
         true,
     );
 }
+
+#[tokio::test]
+async fn trace_errors_persistent_lifecycle() {
+    setup().await;
+    let org = format!("trace-test-{}", svix_ksuid::Ksuid::new(None, None));
+    let timestamp = config::utils::time::now_micros();
+    let make = |span: &str, at| {
+        extract_trace_errors("traces", at, serde_json::json!({"service_name":"api","operation_name":"GET /users","span_status":"ERROR","trace_id":"0123456789abcdef0123456789abcdef","span_id":span}).as_object().unwrap()).pop().unwrap()
+    };
+    record_trace_errors(
+        &org,
+        vec![make("first", timestamp), make("first", timestamp)],
+    )
+    .await
+    .unwrap();
+    let (incidents, total) = list_incidents(&org, None, 100, 0).await.unwrap();
+    assert_eq!(total, 1);
+    let id = &incidents[0].id;
+    assert_eq!(
+        incidents[0]
+            .error_tracking
+            .as_ref()
+            .unwrap()
+            .occurrence_count,
+        1
+    );
+    assert_eq!(incidents[0].alert_count, 0);
+    let current = require_incident(&org, id).await.unwrap();
+    let mut context = current.topology_context.clone().unwrap();
+    context["preserved_metadata"] = serde_json::json!(true);
+    let mut active: alert_incidents::ActiveModel = current.into();
+    active.topology_context = Set(Some(context));
+    active
+        .update(infra::db::get_orm_client_rw().await)
+        .await
+        .unwrap();
+    update_status(&org, id, "acknowledged", "tester")
+        .await
+        .unwrap();
+    record_trace_errors(&org, vec![make("second", timestamp + 1)])
+        .await
+        .unwrap();
+    let detail = get_incident_with_alerts(&org, id).await.unwrap().unwrap();
+    assert_eq!(detail.incident.status, IncidentStatus::Acknowledged);
+    assert_eq!(
+        require_incident(&org, id)
+            .await
+            .unwrap()
+            .topology_context
+            .unwrap()["preserved_metadata"],
+        true
+    );
+
+    assert!(detail.triggers.is_empty());
+    update_status(&org, id, "resolved", "tester").await.unwrap();
+    record_trace_errors(&org, vec![make("old-replay", timestamp - 1)])
+        .await
+        .unwrap();
+    assert_eq!(require_incident(&org, id).await.unwrap().status, "resolved");
+    record_trace_errors(
+        &org,
+        vec![make("third", config::utils::time::now_micros() + 1)],
+    )
+    .await
+    .unwrap();
+    let (incidents, total) = list_incidents(&org, None, 100, 0).await.unwrap();
+    assert_eq!(total, 1);
+    assert_eq!(incidents[0].status, IncidentStatus::Open);
+    assert_eq!(&incidents[0].id, id);
+    assert_eq!(
+        incidents[0]
+            .error_tracking
+            .as_ref()
+            .unwrap()
+            .occurrence_count,
+        4
+    );
+    assert!(
+        get_incident_with_alerts("other-org", id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let other_org = format!("{org}-other");
+    record_trace_errors(&other_org, vec![make("first", timestamp)])
+        .await
+        .unwrap();
+    let (other, count) = list_incidents(&other_org, None, 100, 0).await.unwrap();
+    assert_eq!(count, 1);
+    assert_ne!(&other[0].id, id);
+    let alert = alert(&org, "rule");
+    let outcome = correlate_firing(&alert, &Map::new(), timestamp, &[])
+        .await
+        .unwrap();
+    assert_ne!(outcome.incident_id(), id);
+    cleanup(&other_org).await;
+    cleanup(&org).await;
+}

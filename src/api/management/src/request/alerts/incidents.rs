@@ -1543,6 +1543,7 @@ mod tests {
             status: config::meta::alerts::incidents::IncidentStatus::Open,
             severity: config::meta::alerts::incidents::IncidentSeverity::P1,
             topology_context: None,
+            error_tracking: None,
             first_alert_at: 1000,
             last_alert_at: 2000,
             resolved_at: None,

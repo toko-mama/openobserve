@@ -398,11 +398,21 @@ pub async fn list(
     limit: u64,
     offset: u64,
 ) -> Result<Vec<alert_incidents::Model>, errors::Error> {
+    list_with_error_tracking(org_id, status, limit, offset, false).await
+}
+
+pub async fn list_with_error_tracking(
+    org_id: &str,
+    status: Option<&str>,
+    limit: u64,
+    offset: u64,
+    include_error_tracking: bool,
+) -> Result<Vec<alert_incidents::Model>, errors::Error> {
     let client = get_orm_client_ro().await;
 
     let mut query = alert_incidents::Entity::find()
         .select_only()
-        // Select all columns EXCEPT topology_context for performance
+        // Enterprise topology graphs can be large; OSS needs its bounded error metadata.
         .column(alert_incidents::Column::Id)
         .column(alert_incidents::Column::OrgId)
         .column(alert_incidents::Column::Status)
@@ -421,6 +431,19 @@ pub async fn list(
         .column(alert_incidents::Column::UpdatedAt)
         .filter(alert_incidents::Column::OrgId.eq(org_id))
         .order_by_desc(alert_incidents::Column::LastAlertAt);
+
+    if include_error_tracking {
+        query = query.expr_as(
+            Expr::expr(
+                Expr::case(
+                    alert_incidents::Column::KeyType.eq("TraceError"),
+                    Expr::col(alert_incidents::Column::TopologyContext),
+                )
+                .finally(Expr::cust("NULL")),
+            ),
+            alert_incidents::Column::TopologyContext,
+        );
+    }
 
     if let Some(s) = status {
         query = query.filter(alert_incidents::Column::Status.eq(s));

@@ -2702,6 +2702,7 @@ fn model_to_incident_with_topology(
         group_values: db_model.group_values,
         key_type: config::meta::alerts::incidents::KeyType::from_stored(&db_model.key_type),
         topology_context,
+        error_tracking: None,
     }
 }
 

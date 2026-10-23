@@ -347,6 +347,27 @@ pub enum EdgeType {
     ServiceDependency,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TraceErrorReference {
+    pub trace_id: String,
+    pub span_id: String,
+    pub stream_name: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ErrorTracking {
+    pub service: String,
+    pub exception_type: String,
+    pub message: String,
+    pub stacktrace: String,
+    pub operation: String,
+    pub occurrence_count: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub latest_trace: TraceErrorReference,
+}
+
 /// Main incident entity - a group of correlated alerts
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Incident {
@@ -384,6 +405,8 @@ pub struct Incident {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topology_context: Option<IncidentTopology>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_tracking: Option<ErrorTracking>,
 }
 
 /// Alert info within an incident (junction table representation)
@@ -1872,6 +1895,7 @@ mod tests {
             group_values: serde_json::Value::Null,
             key_type: KeyType::default(),
             topology_context,
+            error_tracking: None,
         }
     }
 

@@ -198,6 +198,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
             <div class="px-page-edge relative flex flex-1 flex-col overflow-hidden pt-4 pb-2">
               <!-- Overview Tab Content - REDESIGNED -->
               <div v-if="activeTab === 'overview'" class="flex flex-1 flex-col overflow-hidden">
+                <IncidentErrorSummary
+                  :error-tracking="incidentDetails?.error_tracking"
+                  :org-identifier="store.state.selectedOrganization.identifier"
+                />
                 <!-- SECTION 1: Hero Metrics (100px height) -->
                 <div class="mb-3 flex h-25 gap-3">
                   <!-- 1. Total Alerts Card -->
@@ -1529,6 +1533,7 @@ import IncidentTimeline from "./IncidentTimeline.vue";
 import IncidentAlertTriggersTable from "./IncidentAlertTriggersTable.vue";
 import CustomChartRenderer from "@/components/dashboards/panels/CustomChartRenderer.vue";
 import { contextRegistry, createIncidentsContextProvider } from "@/composables/contextProviders";
+import IncidentErrorSummary from "./IncidentErrorSummary.vue";
 import OButton from "@/lib/core/Button/OButton.vue";
 import OIcon from "@/lib/core/Icon/OIcon.vue";
 import OSpinner from "@/lib/feedback/Spinner/OSpinner.vue";
@@ -1561,6 +1566,7 @@ export default defineComponent({
     IncidentTimeline,
     CustomChartRenderer,
     OButton,
+    IncidentErrorSummary,
     OSpinner,
     OTooltip,
     OTimeCell,

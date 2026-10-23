@@ -15,6 +15,8 @@
 
 #[path = "incidents_oss_grouping.rs"]
 mod grouping;
+#[path = "trace_errors.rs"]
+mod trace_errors;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -48,6 +50,7 @@ use svix_ksuid::KsuidLike;
 use tokio::sync::Mutex;
 
 use self::grouping::{Grouping, grouping};
+pub use self::trace_errors::{extract_trace_errors, record_trace_errors};
 
 // SQLite cannot lock a missing correlation row; single-node mutations share this lock.
 static MUTATIONS: Mutex<()> = Mutex::const_new(());
@@ -91,7 +94,8 @@ pub async fn list_incidents(
     validate_pagination(limit, offset)?;
     let status = status.map(parse_status).transpose()?.map(|s| s.to_string());
     let count = store::count(org_id, status.as_deref()).await?;
-    let incidents = store::list(org_id, status.as_deref(), limit, offset).await?;
+    let incidents =
+        store::list_with_error_tracking(org_id, status.as_deref(), limit, offset, true).await?;
     Ok((
         incidents.into_iter().map(model_to_incident).collect(),
         count,
@@ -807,6 +811,11 @@ fn model_to_incident(model: Model) -> Incident {
         updated_at: model.updated_at,
         group_values: model.group_values,
         key_type: KeyType::from_stored(&model.key_type),
+        error_tracking: model
+            .topology_context
+            .as_ref()
+            .and_then(|v| v.get("error_tracking"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
         topology_context: None,
     }
 }

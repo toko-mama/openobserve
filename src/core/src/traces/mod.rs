@@ -1865,8 +1865,18 @@ async fn write_traces(
 
     let mut data_buf: HashMap<String, SchemaRecords> = HashMap::new();
     let mut partition_memo = PartitionMemo::new(&partition_keys, partition_time_level);
+    #[cfg(not(feature = "enterprise"))]
+    let mut trace_errors = Vec::new();
 
     for (timestamp, record_val) in json_data {
+        #[cfg(not(feature = "enterprise"))]
+        if cfg.oss_incidents.enabled && cfg.oss_incidents.trace_errors_enabled {
+            trace_errors.extend(crate::alerts::incidents::extract_trace_errors(
+                stream_name,
+                timestamp,
+                &record_val,
+            ));
+        }
         // Start check for alert trigger
         if let Some(alerts) = cur_stream_alerts
             && triggers.len() < alerts.len()
@@ -1933,6 +1943,16 @@ async fn write_traces(
         log::error!("[TRACES] Error while writing traces: org_id: {org_id}, error: {e}");
         std::io::Error::other(e)
     })?;
+
+    #[cfg(not(feature = "enterprise"))]
+    if !trace_errors.is_empty()
+        && let Err(error) =
+            crate::alerts::incidents::record_trace_errors(org_id, trace_errors).await
+    {
+        log::error!(
+            "[TRACE_ERRORS] Failed to record error issues for {org_id}/{stream_name}: {error}"
+        );
+    }
 
     // only one trigger per request; notification/db work must not block ingestion
     if !triggers.is_empty() {

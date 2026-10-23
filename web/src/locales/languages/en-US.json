@@ -7818,6 +7818,11 @@
       "alertVolumeOverTime": "Alert Volume Over Time"
     },
     "incidents": {
+      "errorIssue": "Error issue",
+      "errorOccurrences": "Occurrences: {count}",
+      "viewLatestErrorTrace": "View latest trace",
+      "errorFirstSeen": "First seen: {time}",
+      "errorLastSeen": "Last seen: {time}",
       "onCall": "On call",
       "onCallState": "State",
       "onCallTeam": "Paged team",

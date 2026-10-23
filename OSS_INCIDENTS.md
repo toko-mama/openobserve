@@ -18,6 +18,7 @@ OSS checks do not verify Enterprise compilation.
 | --- | --- | --- |
 | `ZO_LOCAL_MODE` | `true` | Required; OSS incidents are disabled outside local mode. |
 | `ZO_OSS_INCIDENTS_ENABLED` | `true` | Enable the single-node incident service and UI capability. |
+| `ZO_OSS_TRACE_ERRORS_ENABLED` | `true` | Automatically track errors from newly accepted traces as grouped issues. |
 | `ZO_OSS_INCIDENTS_GROUPING_FIELDS` | empty | Comma-separated alert-result fields for exact correlation across rules. |
 | `ZO_OSS_INCIDENTS_AUTO_RESOLVE_TIMEOUT_SECS` | `0` | Optional inactivity timeout; zero disables it. |
 
@@ -39,6 +40,14 @@ deliveries persist across restarts; partial delivery followed by retry can send
 duplicates. Retry bookkeeping uses namespaced internal JSON in
 `topology_context`, hidden from the public OSS topology response. Before moving
 this database to Enterprise topology support, inspect or convert that metadata.
+
+## Automatic OTel error tracking
+
+In single-node OSS mode, accepted OTLP and JSON trace errors create incidents without an alert rule. Error issues expose occurrence count, first/last seen, exception details and a link to the latest trace. Repeated spans with the same error signature join the issue; an error after resolution reopens it. Alert-derived incidents retain their existing lifecycle and remain separate from automatic error issues. An alert with Creates Incident enabled can therefore also create an alert-derived incident for the same failure; disable that option on the rule if only automatic error issues are wanted.
+
+The service uses the exception type and normalized stack when available, and falls back to operation and error type for error spans without a stack. Groups are isolated by organization and service. Only newly ingested telemetry is processed; there is no backfill of stored traces. Sampling or instrumentation can prevent an error from reaching ingestion. Each exception event is considered separately; duplicate events of the same signature in one span count once for that issue. Duplicate suppression retains the latest 256 trace/span IDs per issue, so replaying an older evicted span can increase its occurrence count. Late data from before resolution is recorded without reopening the issue. Error capture does not automatically send alert notifications.
+
+The deployment helper explicitly enables `ZO_OSS_TRACE_ERRORS_ENABLED=true`. To disable capture outside that deployment helper, set it to `false`; incident listing and alert-derived incidents remain available. Persistence failures are logged with `[TRACE_ERRORS]` and do not reject an otherwise successful trace write.
 
 ## Verification status and resources
 

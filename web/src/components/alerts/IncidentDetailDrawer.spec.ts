@@ -120,6 +120,7 @@ const createIncident = (overrides: Partial<Incident> = {}): Incident => ({
   created_at: overrides.created_at || 1700000000000000,
   updated_at: overrides.updated_at || 1700000000000000,
   topology_context: overrides.topology_context,
+  error_tracking: overrides.error_tracking,
 });
 
 const createIncidentWithAlerts = (
@@ -265,6 +266,37 @@ describe("IncidentDetailDrawer.vue", () => {
     if (wrapper) {
       wrapper.unmount();
     }
+  });
+
+  it("shows error occurrences separately from zero related alerts", async () => {
+    (incidentsService.get as any).mockResolvedValue({
+      data: createIncidentWithAlerts({
+        alert_count: 0,
+        error_tracking: {
+          service: "checkout",
+          exception_type: "TypeError",
+          message: "Bad cart",
+          stacktrace: "at checkout",
+          operation: "POST /checkout",
+          occurrence_count: 12,
+          first_seen: 1700000000000000,
+          last_seen: 1700000600000000,
+          latest_trace: {
+            trace_id: "abc123",
+            span_id: "span1",
+            stream_name: "default",
+            timestamp: 1700000300000000,
+          },
+        },
+      }),
+    });
+    wrapper = await createWrapper({}, {}, "error-issue");
+    await flushPromises();
+    expect(wrapper.find('[data-test="incident-error-summary"]').text()).toContain(
+      "Occurrences: 12",
+    );
+    expect(wrapper.vm.triggers).toHaveLength(0);
+    expect(wrapper.vm.uniqueAlertsCount).toBe(0);
   });
 
   it("OSS renders lifecycle tabs without AI, topology or background enterprise requests", async () => {
