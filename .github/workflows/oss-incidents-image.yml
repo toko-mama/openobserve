@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, mac-anang]
+    runs-on: [self-hosted, prod]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
