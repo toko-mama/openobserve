@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.npm cd web && npm ci --no-audit --no-fund &
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/opt/cargo/git \
     --mount=type=cache,target=/workspace/target \
-    cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed \
+    cargo build --locked --jobs 1 -p openobserve -p web --features rust-embed-for-web/always-embed \
     && mkdir /output && cp target/debug/openobserve /output/openobserve \
     && cp web/src/assets/ai-datasource-content/generated/.fetch.json /output/datasource-content.json \
     && { rustc --version; cargo --version; node --version; npm --version; protoc --version; sha256sum Cargo.lock web/package-lock.json; } > /output/toolchain.txt
