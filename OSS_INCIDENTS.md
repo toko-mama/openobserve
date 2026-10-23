@@ -74,14 +74,17 @@ packaged for the confirmed `linux/amd64` VM.
 `.github/workflows/oss-incidents-image.yml` is manually dispatched and runs on
 native `ubuntu-24.04` x86_64. It has read-only repository contents permission,
 uses no registry credentials, and saves a Docker image artifact without pushing
-an image. A run builds real frontend assets before Rust embeds them, checks
-formatting/Clippy and focused tests, builds an OSS debug binary, then uses
+an image. Select **Build custom OpenObserve image** and branch `custom-main` in
+Actions. A run builds frontend assets once, builds one native OSS debug binary
+with embedded assets, then uses
 `deploy/build/Dockerfile.pr` to package it. The packaging build explicitly enables
 the existing `rust-embed-for-web/always-embed` dependency feature by selecting
 both `openobserve` and `web`; otherwise debug mode reads the compile-time asset
 directory on disk and a binary-only image loses its UI. No Cargo manifest or
 Enterprise feature change is needed. The Docker context contains only
-the Dockerfile and `bin/openobserve`; it never uploads the checkout, Cargo
+the Dockerfile and `bin/openobserve`. npm and Cargo dependencies are cached;
+formatting, linting, type checks, unit tests and test containers are omitted.
+The first uncached build can still take time. It never uploads the checkout, Cargo
 target directory, or npm dependencies as a Docker context.
 
 The runner must have at least 20 GiB free before dependencies; allow 30 GiB or

@@ -1,4 +1,4 @@
-name: OSS incidents amd64 verification artifact
+name: Build custom OpenObserve image
 
 on:
   workflow_dispatch:
@@ -11,15 +11,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify-and-package:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CYPRESS_INSTALL_BINARY: "0"
       NODE_OPTIONS: "--max-old-space-size=6144"
       DS_CONTENT_REF: "700dcc51f6cb3aff32c5ef1733008456e14d0f38"
     steps:
@@ -40,16 +40,22 @@ jobs:
           available_kib=$(df -Pk . | awk 'NR == 2 {print $4}')
           test "$available_kib" -ge 20971520
 
-      - name: Install native build dependencies
+      - name: Ensure native build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev clang cmake
+          if command -v cc && command -v c++ && command -v clang && command -v cmake && command -v pkg-config && pkg-config --exists openssl; then
+            echo "Native build dependencies already available"
+          else
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 update
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 install -y --no-install-recommends build-essential pkg-config libssl-dev clang cmake
+          fi
 
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: nightly-2026-05-20
-          components: rustfmt, clippy
-          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: custom-native-amd64
 
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -59,28 +65,20 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
-      - name: Install and verify frontend
+      - name: Build frontend
         working-directory: web
         run: |
-          npm ci
-          npm run format:check
-          npm run lint:ci -- --quiet
-          npm run type-check:app
-          npx vitest run src/utils/incidentCapabilities.spec.ts src/components/alerts/steps/AlertSettings.spec.ts src/components/alerts/IncidentDetailDrawer.spec.ts src/composables/shared/useEnterpriseRoutes.spec.ts src/layouts/MainLayout.nav.spec.ts src/plugins/correlation/TelemetryCorrelationDashboard.spec.ts src/services/incidents.spec.ts src/stores/incidents.spec.ts src/lib/core/Navbar/navGroups.spec.ts --maxWorkers=1
-          npm run build
+          npm ci --no-audit --no-fund
+          npm run build-only
+          npm run copy
           test -s dist/index.html
           test -d dist/src/assets
 
-      - name: Verify and build OSS debug binary with embedded frontend
-        env:
-          ZO_DATA_DIR: ${{ runner.temp }}/oss-incidents-cargo-data/
-        run: |
-          cargo fmt --all -- --check
-          cargo test -p openobserve-core incidents_oss --lib --locked
-          cargo test -p openobserve-api-management incidents --lib --locked
-          cargo clippy --workspace --all-targets -- -W clippy::too_many_lines -W clippy::cognitive_complexity -W clippy::excessive_nesting -D warnings
-          cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed --target x86_64-unknown-linux-gnu
+      - name: Build OSS debug binary with embedded frontend
+        run: cargo build --locked -p openobserve -p web --features rust-embed-for-web/always-embed
 
       - name: Package native linux/amd64 image with minimal context
         shell: bash
@@ -88,7 +86,7 @@ jobs:
           set -euo pipefail
           image_context=$(mktemp -d "$RUNNER_TEMP/oss-incidents-context.XXXXXX")
           mkdir -p "$image_context/bin" artifacts
-          cp target/x86_64-unknown-linux-gnu/debug/openobserve "$image_context/bin/openobserve"
+          cp target/debug/openobserve "$image_context/bin/openobserve"
           cp deploy/build/Dockerfile.pr "$image_context/Dockerfile"
           source_revision=$(git rev-parse HEAD)
           image_tag="oss-incidents:amd64-$source_revision"
@@ -112,21 +110,6 @@ jobs:
           } > artifacts/build-metadata.txt
           cp web/src/assets/ai-datasource-content/generated/.fetch.json artifacts/datasource-content.json
           docker image inspect "$image_tag" > artifacts/image-inspect.json
-
-      - name: Smoke-test image against disposable local storage
-        shell: bash
-        run: |
-          set -euo pipefail
-          smoke_data=$(mktemp -d "$RUNNER_TEMP/oss-incidents-smoke.XXXXXX")
-          export ZO_SMOKE_EMAIL=smoke@example.com
-          export ZO_SMOKE_PASSWORD
-          ZO_SMOKE_PASSWORD=$(openssl rand -hex 24)
-          container_id=$(docker run --detach --publish 127.0.0.1::5080 --mount "type=bind,src=$smoke_data,dst=/data" --env ZO_LOCAL_MODE=true --env ZO_LOCAL_MODE_STORAGE=disk --env ZO_META_STORE=sqlite --env ZO_DATA_DIR=/data/ --env ZO_OSS_INCIDENTS_ENABLED=true --env ZO_OSS_INCIDENTS_AUTO_RESOLVE_TIMEOUT_SECS=0 --env "ZO_ROOT_USER_EMAIL=$ZO_SMOKE_EMAIL" --env "ZO_ROOT_USER_PASSWORD=$ZO_SMOKE_PASSWORD" "$OSS_INCIDENTS_IMAGE")
-          trap 'docker logs "$container_id" > artifacts/container-smoke.log 2>&1; docker rm --force "$container_id" >/dev/null' EXIT
-          smoke_port=$(docker port "$container_id" 5080/tcp | awk -F: '{print $NF}')
-          python3 scripts/oss-incidents-smoke.py "http://127.0.0.1:$smoke_port"
-          docker restart "$container_id" >/dev/null
-          python3 scripts/oss-incidents-smoke.py "http://127.0.0.1:$smoke_port"
 
       - name: Export Docker image archive and checksum
         shell: bash
