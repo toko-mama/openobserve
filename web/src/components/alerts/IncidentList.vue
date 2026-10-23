@@ -349,7 +349,7 @@ export default defineComponent({
     const qTableRef: any = ref(null);
     const orgIdForList = useOrgId();
     const incidentsList = useQuery(() =>
-      Object.assign(incidentsQuery(orgIdForList.value, undefined as unknown as string, 1000, 0), {
+      Object.assign(incidentsQuery(orgIdForList.value, undefined as unknown as string, 500, 0), {
         enabled: !!orgIdForList.value,
       }),
     );
