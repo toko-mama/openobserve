@@ -27,6 +27,7 @@ pub mod gen_ai_agents;
 pub mod incident_events;
 pub mod incident_integration_senders;
 pub mod incident_integrations;
+pub mod incident_trace_occurrences;
 pub mod kv_store;
 pub mod llm_annotation_queue_bindings;
 pub mod llm_annotation_queue_items;

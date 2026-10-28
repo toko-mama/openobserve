@@ -42,6 +42,7 @@ pub mod folders;
 pub mod gen_ai_agents;
 pub mod incident_events;
 pub mod incident_integrations;
+pub mod incident_trace_occurrences;
 pub mod kv_store;
 pub mod llm_prompts;
 pub mod llm_secrets;

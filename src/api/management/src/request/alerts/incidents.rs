@@ -850,6 +850,57 @@ pub async fn get_incident_rca_history(
     })
 }
 
+pub async fn get_trace_occurrences(
+    Path((org_id, incident_id)): Path<(String, String)>,
+    Query(query): Query<ListIncidentsQuery>,
+) -> Response {
+    if query.limit == 0 || query.limit > 500 || query.offset > i64::MAX as u64 {
+        return MetaHttpResponse::bad_request("Invalid occurrence pagination");
+    }
+    if !config::get_config().oss_incidents.enabled {
+        return MetaHttpResponse::forbidden("Incidents are disabled");
+    }
+    let incident = match infra::table::alert_incidents::get(&org_id, &incident_id).await {
+        Ok(Some(incident)) => incident,
+        Ok(None) => return MetaHttpResponse::not_found("Incident not found"),
+        Err(error) => return MetaHttpResponse::internal_error(error.to_string()),
+    };
+    match infra::table::incident_trace_occurrences::list(
+        &org_id,
+        &incident_id,
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
+        Ok((mut occurrences, mut total)) => {
+            let metadata = incident
+                .topology_context
+                .as_ref()
+                .and_then(|context| context.get("error_tracking"))
+                .and_then(|value| {
+                    serde_json::from_value::<config::meta::alerts::incidents::ErrorTracking>(
+                        value.clone(),
+                    )
+                    .ok()
+                });
+            let count = metadata.as_ref().map_or(0, |error| error.occurrence_count);
+            if total == 0
+                && let Some(error) = metadata
+            {
+                total = 1;
+                if query.offset == 0 {
+                    occurrences.push(error.latest_trace);
+                }
+            }
+            MetaHttpResponse::json(
+                serde_json::json!({"occurrences": occurrences, "total": total, "history_incomplete": count > total}),
+            )
+        }
+        Err(error) => MetaHttpResponse::internal_error(error.to_string()),
+    }
+}
+
 /// Get incident events timeline
 #[cfg(feature = "enterprise")]
 pub async fn get_incident_events(Path((org_id, incident_id)): Path<(String, String)>) -> Response {
@@ -1298,6 +1349,82 @@ fn oss_incident_error(error: anyhow::Error) -> Response {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn trace_occurrences_preserve_legacy_latest_reference() {
+        use sea_orm::{ActiveModelTrait, ConnectionTrait, Schema, Set};
+        std::fs::create_dir_all(&config::get_config().common.data_db_dir).unwrap();
+        let db = infra::db::get_orm_client_rw().await;
+        let schema = Schema::new(db.get_database_backend());
+        for mut statement in [
+            schema.create_table_from_entity(infra::table::entity::alert_incidents::Entity),
+            schema
+                .create_table_from_entity(infra::table::entity::incident_trace_occurrences::Entity),
+        ] {
+            db.execute(db.get_database_backend().build(statement.if_not_exists()))
+                .await
+                .unwrap();
+        }
+        let org = format!("occurrences-api-{}", uuid::Uuid::new_v4());
+        let incident = infra::table::alert_incidents::create(
+            &org,
+            "P3",
+            serde_json::json!({}),
+            "TraceError",
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut active: infra::table::entity::alert_incidents::ActiveModel =
+            incident.clone().into();
+        active.topology_context = Set(Some(serde_json::json!({"error_tracking": {
+            "service":"api", "exception_type":"Error", "message":"error", "stacktrace":"", "operation":"GET /", "occurrence_count":41,
+            "first_seen":1, "last_seen":2, "latest_trace":{"trace_id":"latest", "span_id":"span", "stream_name":"traces", "timestamp":2}
+        }})));
+        active.update(db).await.unwrap();
+        for offset in [0, 1] {
+            let response = get_trace_occurrences(
+                Path((org.clone(), incident.id.clone())),
+                Query(ListIncidentsQuery {
+                    status: None,
+                    limit: 50,
+                    offset,
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["total"], 1);
+            assert_eq!(body["history_incomplete"], true);
+            assert_eq!(
+                body["occurrences"].as_array().unwrap().len(),
+                if offset == 0 { 1 } else { 0 }
+            );
+        }
+        infra::table::alert_incidents::delete_by_org(&org)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn trace_occurrences_validate_pagination() {
+        for (limit, offset) in [(0, 0), (501, 0), (1, u64::MAX)] {
+            let response = get_trace_occurrences(
+                Path(("default".into(), "missing".into())),
+                Query(ListIncidentsQuery {
+                    status: None,
+                    limit,
+                    offset,
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+    }
+
     #[cfg(not(feature = "enterprise"))]
     #[tokio::test]
     async fn oss_incidents_reject_invalid_input_before_storage() {
@@ -1410,6 +1537,16 @@ mod tests {
             })
         };
         let response = get_incident(Path(("other-org".into(), incident.id.clone()))).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = get_trace_occurrences(
+            Path(("other-org".into(), incident.id.clone())),
+            Query(ListIncidentsQuery {
+                status: None,
+                limit: 50,
+                offset: 0,
+            }),
+        )
+        .await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
         let response = get_incident_events(Path(("other-org".into(), incident.id.clone()))).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);

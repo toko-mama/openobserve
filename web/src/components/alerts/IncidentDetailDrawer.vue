@@ -1376,99 +1376,108 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 v-if="activeTab === 'traces'"
                 class="flex h-full flex-1 flex-col overflow-hidden"
               >
-                <!-- Refresh Button (shown when traces data is loaded) -->
-                <div
-                  v-if="
-                    hasCorrelatedData &&
-                    !correlationLoading &&
-                    (correlationData?.traceStreams?.length ?? 0) > 0
-                  "
-                  class="border-card-glass-border flex items-center gap-2 border-b border-solid px-4 py-2"
-                >
-                  <span class="text-xs">{{ t("alerts.incidents.showingCorrelatedTraces") }}</span>
-                  <OButton
-                    variant="ghost"
-                    size="icon-sm"
-                    :disabled="correlationLoading"
-                    @click="refreshCorrelation"
-                    ><OIcon name="refresh" size="sm" /><OTooltip
-                      :content="t('alerts.incidents.refreshCorrelatedData')"
-                  /></OButton>
-                </div>
-
-                <!-- Loading State -->
-                <div
-                  v-if="correlationLoading"
-                  class="flex h-full flex-1 flex-col items-center justify-center"
-                >
-                  <OSpinner
-                    size="lg"
-                    class="mb-4"
-                    data-test="incident-telemetry-loading-indicator"
-                  />
-                  <div class="text-base">{{ t("alerts.incidents.loadingCorrelatedTraces") }}</div>
-                </div>
-
-                <!-- Error/No Data State -->
-                <div
-                  v-else-if="correlationError || !correlationData?.traceStreams?.length"
-                  class="flex h-full flex-1 flex-col items-center justify-center gap-2"
-                >
-                  <OIcon
-                    :name="
-                      correlationError
-                        ? correlationError.includes('disambiguation fields')
-                          ? 'warning'
-                          : 'error-outline'
-                        : 'info-outline'
-                    "
-                    :class="[
-                      'h-16 w-16',
-                      correlationError
-                        ? correlationError.includes('disambiguation fields')
-                          ? 'text-warning'
-                          : 'text-status-negative'
-                        : 'text-text-muted',
-                    ]"
-                  />
-                  <div class="mt-3 text-xl font-semibold">
-                    {{ correlationError || t("alerts.incidents.noCorrelatedTraces") }}
-                  </div>
+                <IncidentTraceOccurrences
+                  v-if="incidentDetails?.error_tracking"
+                  :incident-id="incidentDetails.id"
+                  :org-identifier="store.state.selectedOrganization.identifier"
+                />
+                <template v-else>
+                  <!-- Refresh Button (shown when traces data is loaded) -->
                   <div
-                    v-if="correlationError && correlationError.includes('disambiguation fields')"
-                    class="text-text-secondary mt-2 max-w-125 text-center text-sm"
+                    v-if="
+                      hasCorrelatedData &&
+                      !correlationLoading &&
+                      (correlationData?.traceStreams?.length ?? 0) > 0
+                    "
+                    class="border-card-glass-border flex items-center gap-2 border-b border-solid px-4 py-2"
                   >
-                    {{ t("alerts.incidents.disambiguationChangedMessage") }}
+                    <span class="text-xs">{{ t("alerts.incidents.showingCorrelatedTraces") }}</span>
+                    <OButton
+                      variant="ghost"
+                      size="icon-sm"
+                      :disabled="correlationLoading"
+                      @click="refreshCorrelation"
+                      ><OIcon name="refresh" size="sm" /><OTooltip
+                        :content="t('alerts.incidents.refreshCorrelatedData')"
+                    /></OButton>
                   </div>
-                  <OButton
-                    v-if="correlationError && !correlationError.includes('disambiguation fields')"
-                    variant="outline"
-                    size="md"
-                    @click="refreshCorrelation"
-                    class="mt-3"
-                    ><OIcon name="refresh" size="sm" class="me-1" />{{ t("common.retry") }}</OButton
-                  >
-                </div>
 
-                <!-- Success State - TelemetryCorrelationDashboard -->
-                <div
-                  v-else-if="hasCorrelatedData && correlationData"
-                  class="flex-1 overflow-hidden"
-                >
-                  <TelemetryCorrelationDashboard
-                    mode="embedded-tabs"
-                    :semantic-groups-enabled="capabilities.topology"
-                    :externalActiveTab="'traces'"
-                    :serviceName="correlationData.serviceName"
-                    :matchedDimensions="correlationData.matchedDimensions"
-                    :additionalDimensions="correlationData.additionalDimensions"
-                    :logStreams="correlationData.logStreams"
-                    :metricStreams="correlationData.metricStreams"
-                    :traceStreams="correlationData.traceStreams"
-                    :timeRange="telemetryTimeRange"
-                    :hideDimensionFilters="true"
-                  />
-                </div>
+                  <!-- Loading State -->
+                  <div
+                    v-if="correlationLoading"
+                    class="flex h-full flex-1 flex-col items-center justify-center"
+                  >
+                    <OSpinner
+                      size="lg"
+                      class="mb-4"
+                      data-test="incident-telemetry-loading-indicator"
+                    />
+                    <div class="text-base">{{ t("alerts.incidents.loadingCorrelatedTraces") }}</div>
+                  </div>
+
+                  <!-- Error/No Data State -->
+                  <div
+                    v-else-if="correlationError || !correlationData?.traceStreams?.length"
+                    class="flex h-full flex-1 flex-col items-center justify-center gap-2"
+                  >
+                    <OIcon
+                      :name="
+                        correlationError
+                          ? correlationError.includes('disambiguation fields')
+                            ? 'warning'
+                            : 'error-outline'
+                          : 'info-outline'
+                      "
+                      :class="[
+                        'h-16 w-16',
+                        correlationError
+                          ? correlationError.includes('disambiguation fields')
+                            ? 'text-warning'
+                            : 'text-status-negative'
+                          : 'text-text-muted',
+                      ]"
+                    />
+                    <div class="mt-3 text-xl font-semibold">
+                      {{ correlationError || t("alerts.incidents.noCorrelatedTraces") }}
+                    </div>
+                    <div
+                      v-if="correlationError && correlationError.includes('disambiguation fields')"
+                      class="text-text-secondary mt-2 max-w-125 text-center text-sm"
+                    >
+                      {{ t("alerts.incidents.disambiguationChangedMessage") }}
+                    </div>
+                    <OButton
+                      v-if="correlationError && !correlationError.includes('disambiguation fields')"
+                      variant="outline"
+                      size="md"
+                      @click="refreshCorrelation"
+                      class="mt-3"
+                      ><OIcon name="refresh" size="sm" class="me-1" />{{
+                        t("common.retry")
+                      }}</OButton
+                    >
+                  </div>
+
+                  <!-- Success State - TelemetryCorrelationDashboard -->
+                  <div
+                    v-else-if="hasCorrelatedData && correlationData"
+                    class="flex-1 overflow-hidden"
+                  >
+                    <TelemetryCorrelationDashboard
+                      mode="embedded-tabs"
+                      :semantic-groups-enabled="capabilities.topology"
+                      :externalActiveTab="'traces'"
+                      :serviceName="correlationData.serviceName"
+                      :matchedDimensions="correlationData.matchedDimensions"
+                      :additionalDimensions="correlationData.additionalDimensions"
+                      :logStreams="correlationData.logStreams"
+                      :metricStreams="correlationData.metricStreams"
+                      :traceStreams="correlationData.traceStreams"
+                      :timeRange="telemetryTimeRange"
+                      :hideDimensionFilters="true"
+                    />
+                  </div>
+                </template>
               </div>
             </div>
           </div>
@@ -1534,6 +1543,7 @@ import IncidentAlertTriggersTable from "./IncidentAlertTriggersTable.vue";
 import CustomChartRenderer from "@/components/dashboards/panels/CustomChartRenderer.vue";
 import { contextRegistry, createIncidentsContextProvider } from "@/composables/contextProviders";
 import IncidentErrorSummary from "./IncidentErrorSummary.vue";
+import IncidentTraceOccurrences from "./IncidentTraceOccurrences.vue";
 import OButton from "@/lib/core/Button/OButton.vue";
 import OIcon from "@/lib/core/Icon/OIcon.vue";
 import OSpinner from "@/lib/feedback/Spinner/OSpinner.vue";
@@ -1567,6 +1577,7 @@ export default defineComponent({
     CustomChartRenderer,
     OButton,
     IncidentErrorSummary,
+    IncidentTraceOccurrences,
     OSpinner,
     OTooltip,
     OTimeCell,

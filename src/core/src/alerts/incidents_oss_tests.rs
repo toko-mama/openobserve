@@ -26,6 +26,7 @@ async fn setup() {
         schema.create_table_from_entity(infra::table::entity::alert_incidents::Entity),
         schema.create_table_from_entity(infra::table::entity::alert_incident_alerts::Entity),
         schema.create_table_from_entity(infra::table::entity::incident_events::Entity),
+        schema.create_table_from_entity(infra::table::entity::incident_trace_occurrences::Entity),
         schema.create_table_from_entity(infra::table::entity::folders::Entity),
         schema.create_table_from_entity(infra::table::entity::alerts::Entity),
         schema.create_table_from_entity(infra::table::entity::alert_composites::Entity),
@@ -48,6 +49,9 @@ async fn cleanup(org: &str) {
     infra::table::entity::alert_incident_alerts::Entity::delete_many()
         .filter(infra::table::entity::alert_incident_alerts::Column::IncidentId.is_in(ids))
         .exec(infra::db::get_orm_client_rw().await)
+        .await
+        .unwrap();
+    infra::table::incident_trace_occurrences::delete_by_org(org)
         .await
         .unwrap();
     infra::table::incident_events::delete_by_org(org)
@@ -1153,6 +1157,19 @@ async fn trace_errors_persistent_lifecycle() {
         1
     );
     assert_eq!(incidents[0].alert_count, 0);
+    let page = infra::table::incident_trace_occurrences::list(&org, id, 1, 0)
+        .await
+        .unwrap();
+    assert_eq!(page.1, 1);
+    assert_eq!(page.0[0].span_id, "first");
+    assert_eq!(
+        infra::table::incident_trace_occurrences::list("other", id, 10, 0)
+            .await
+            .unwrap()
+            .1,
+        0
+    );
+
     let current = require_incident(&org, id).await.unwrap();
     let mut context = current.topology_context.clone().unwrap();
     context["preserved_metadata"] = serde_json::json!(true);
@@ -1208,6 +1225,70 @@ async fn trace_errors_persistent_lifecycle() {
             .await
             .unwrap()
             .is_none()
+    );
+    let (references, total) = infra::table::incident_trace_occurrences::list(&org, id, 2, 0)
+        .await
+        .unwrap();
+    assert_eq!(total, 4);
+    assert_eq!(references.len(), 2);
+    assert!(references[0].timestamp >= references[1].timestamp);
+    let (second_page, _) = infra::table::incident_trace_occurrences::list(&org, id, 2, 2)
+        .await
+        .unwrap();
+    assert_eq!(second_page.len(), 2);
+    assert!(
+        references
+            .iter()
+            .all(|a| second_page.iter().all(|b| a.span_id != b.span_id))
+    );
+    record_trace_errors(
+        &org,
+        (0..260)
+            .map(|index| make(&format!("many-{index}"), timestamp + 10 + index))
+            .collect(),
+    )
+    .await
+    .unwrap();
+    record_trace_errors(&org, vec![make("first", timestamp)])
+        .await
+        .unwrap();
+    assert_eq!(
+        infra::table::incident_trace_occurrences::list(&org, id, 1, 0)
+            .await
+            .unwrap()
+            .1,
+        264
+    );
+    let detail = get_incident_with_alerts(&org, id).await.unwrap().unwrap();
+    let error = detail.incident.error_tracking.unwrap();
+    assert_eq!(error.occurrence_count, 264);
+    let previous_latest_span = error.latest_trace.span_id;
+    infra::table::incident_trace_occurrences::delete_by_org(&org)
+        .await
+        .unwrap();
+    record_trace_errors(&org, vec![make("after-upgrade", timestamp + 1000)])
+        .await
+        .unwrap();
+    let (legacy_references, legacy_total) =
+        infra::table::incident_trace_occurrences::list(&org, id, 50, 0)
+            .await
+            .unwrap();
+    assert_eq!(legacy_total, 2);
+    assert!(
+        legacy_references
+            .iter()
+            .any(|reference| reference.span_id == previous_latest_span)
+    );
+    assert_eq!(
+        get_incident_with_alerts(&org, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .incident
+            .error_tracking
+            .unwrap()
+            .occurrence_count,
+        265
     );
     let other_org = format!("{org}-other");
     record_trace_errors(&other_org, vec![make("first", timestamp)])

@@ -170,7 +170,24 @@ export interface IncidentCorrelatedStreams {
   correlationData: CorrelationResponse | null;
 }
 
+export interface IncidentTraceOccurrence {
+  trace_id: string;
+  span_id: string;
+  stream_name: string;
+  timestamp: number;
+}
+export interface IncidentTraceOccurrencesPage {
+  occurrences: IncidentTraceOccurrence[];
+  total: number;
+  history_incomplete: boolean;
+}
+
 const incidents = {
+  getTraceOccurrences: (org: string, incidentId: string, limit = 50, offset = 0) =>
+    http().get<IncidentTraceOccurrencesPage>(
+      `/api/v2/${encodeURIComponent(org)}/alerts/incidents/${encodeURIComponent(incidentId)}/trace-occurrences`,
+      { params: { limit, offset } },
+    ),
   /**
    * List incidents with optional filtering and pagination
    */

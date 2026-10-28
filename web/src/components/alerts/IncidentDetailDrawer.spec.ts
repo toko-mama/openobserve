@@ -58,6 +58,7 @@ vi.mock("@/services/incidents", async (importOriginal) => {
   return overlayServiceMock(await importOriginal(), {
     default: {
       get: vi.fn(),
+      getTraceOccurrences: vi.fn(),
       updateStatus: vi.fn(),
       triggerRca: vi.fn(),
       getCorrelatedStreams: vi.fn(),
@@ -255,6 +256,10 @@ describe("IncidentDetailDrawer.vue", () => {
 
     (oncallService.listResponsesForIncident as any).mockRejectedValue(new Error("off"));
     (oncallService.listTeams as any).mockRejectedValue(new Error("off"));
+
+    vi.mocked(incidentsService.getTraceOccurrences).mockResolvedValue({
+      data: { occurrences: [], total: 0, history_incomplete: false },
+    } as any);
 
     // Mock service streams API
     (serviceStreamsApi.getSemanticGroups as any).mockResolvedValue({

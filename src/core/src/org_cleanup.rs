@@ -459,6 +459,9 @@ async fn step_delete_db_resources(org_id: &str) -> Result<(), anyhow::Error> {
     // FK-constrained children must be deleted before their parents.
     // Order: timed_annotations → dashboards → folders (join chain:
     // folders→dashboards→timed_annotations)
+    infra::table::incident_trace_occurrences::delete_by_org(org_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("step_delete_db_resources/incident_trace_occurrences: {e}"))?;
     alert_incidents::delete_by_org(org_id)
         .await
         .map_err(|e| anyhow::anyhow!("step_delete_db_resources/alert_incidents: {e}"))?;

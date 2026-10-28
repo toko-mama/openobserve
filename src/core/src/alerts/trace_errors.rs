@@ -176,6 +176,34 @@ async fn persist(
         "{}:{}",
         metadata.latest_trace.trace_id, metadata.latest_trace.span_id
     ));
+    if let Some(previous) = context
+        .get("error_tracking")
+        .and_then(|value| serde_json::from_value::<ErrorTracking>(value.clone()).ok())
+    {
+        let previous_key = hash(&format!(
+            "{}:{}",
+            previous.latest_trace.trace_id, previous.latest_trace.span_id
+        ));
+        infra::table::incident_trace_occurrences::insert(
+            txn,
+            org_id,
+            &id,
+            &previous_key,
+            &previous.latest_trace,
+        )
+        .await?;
+    }
+    let inserted = infra::table::incident_trace_occurrences::insert(
+        txn,
+        org_id,
+        &id,
+        &span_key,
+        &metadata.latest_trace,
+    )
+    .await?;
+    if !inserted {
+        return Ok(());
+    }
     if dedup.recent_spans.contains(&span_key) {
         return Ok(());
     }
