@@ -102,7 +102,7 @@ import store from "@/test/unit/helpers/store";
 import router from "@/test/unit/helpers/router";
 import config from "@/aws-exports";
 import { queryClient } from "@/composables/query/queryClient";
-import { streamSchemaQuery } from "@/services/stream.queries";
+import { streamNameListQuery, streamSchemaQuery } from "@/services/stream.queries";
 
 // Test data factory
 const createIncident = (overrides: Partial<Incident> = {}): Incident => ({
@@ -353,6 +353,89 @@ describe("IncidentDetailDrawer.vue", () => {
         .toBe("Configured grouping fields");
     } finally {
       warning.mockRestore();
+      config.isEnterprise = "true";
+    }
+  });
+
+  it("loads trace and log streams for an error issue without alerts", async () => {
+    config.isEnterprise = "false";
+    const errorTracking = {
+      service: "checkout",
+      exception_type: "TypeError",
+      message: "Bad cart",
+      stacktrace: "at checkout",
+      operation: "POST /checkout",
+      occurrence_count: 41,
+      first_seen: 1700000000000000,
+      last_seen: 1700000600000000,
+      latest_trace: {
+        trace_id: "abc123",
+        span_id: "span1",
+        stream_name: "otel",
+        timestamp: 1700000300000000,
+      },
+    };
+    vi.mocked(incidentsService.get).mockResolvedValue({
+      data: createIncidentWithAlerts({
+        alerts: [],
+        error_tracking: errorTracking,
+      }),
+    });
+    queryClient.setQueryData(streamNameListQuery("default", "logs").queryKey, [
+      { name: "application" },
+      { name: "unrelated" },
+    ]);
+    queryClient.setQueryData(streamSchemaQuery("default", "application", "logs").queryKey, {
+      schema: [{ name: "trace_id" }],
+      uds_schema: [{ name: "message" }],
+    });
+    queryClient.setQueryData(streamSchemaQuery("default", "unrelated", "logs").queryKey, {
+      schema: [{ name: "message" }],
+    });
+    try {
+      wrapper = await createWrapper(
+        {},
+        { zoConfig: { incidents_enabled: true } },
+        "error-telemetry",
+      );
+      await flushPromises();
+      wrapper.vm.activeTab = "traces";
+      await flushPromises();
+      expect(wrapper.vm.correlationData?.traceStreams).toEqual([
+        { stream_name: "otel", stream_type: "Traces", filters: { trace_id: "abc123" } },
+      ]);
+      expect(wrapper.vm.correlationData?.logStreams).toEqual([
+        { stream_name: "application", stream_type: "Logs", filters: { trace_id: "abc123" } },
+      ]);
+      expect(wrapper.vm.correlationData?.matchedDimensions).toEqual({ trace_id: "abc123" });
+      expect(wrapper.vm.telemetryTimeRange).toEqual({
+        startTime: errorTracking.first_seen - 900_000_000,
+        endTime: errorTracking.last_seen + 900_000_000,
+      });
+      wrapper.vm.activeTab = "logs";
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("No correlated logs found");
+      wrapper.vm.correlationData.logStreams = [];
+      await flushPromises();
+      expect(wrapper.vm.correlationData.traceStreams).toHaveLength(1);
+      expect(wrapper.vm.correlationData.logStreams).toEqual([]);
+      expect(wrapper.text()).toContain("No correlated logs found");
+      const fetch = vi
+        .spyOn(queryClient, "fetchQuery")
+        .mockRejectedValueOnce(new Error("Log discovery unavailable"));
+      try {
+        await wrapper.vm.refreshCorrelation();
+        await flushPromises();
+        expect(wrapper.vm.logsError).toBe("Log discovery unavailable");
+        expect(wrapper.vm.correlationData.traceStreams).toHaveLength(1);
+        wrapper.vm.activeTab = "traces";
+        await flushPromises();
+        expect(wrapper.text()).not.toContain("Log discovery unavailable");
+      } finally {
+        fetch.mockRestore();
+      }
+      expect(incidentsService.getCorrelatedStreams).not.toHaveBeenCalled();
+    } finally {
       config.isEnterprise = "true";
     }
   });

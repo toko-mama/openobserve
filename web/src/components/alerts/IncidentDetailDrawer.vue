@@ -1225,37 +1225,37 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
                 <!-- Error/No Data State -->
                 <div
-                  v-else-if="correlationError || !hasCorrelatedData || !hasAnyStreams"
+                  v-else-if="logsError || !correlationData?.logStreams?.length"
                   class="flex h-full flex-1 flex-col items-center justify-center gap-2"
                 >
                   <OIcon
                     :name="
-                      correlationError
-                        ? correlationError.includes('disambiguation fields')
+                      logsError
+                        ? logsError.includes('disambiguation fields')
                           ? 'warning'
                           : 'error-outline'
                         : 'info-outline'
                     "
                     :class="[
                       'h-16 w-16',
-                      correlationError
-                        ? correlationError.includes('disambiguation fields')
+                      logsError
+                        ? logsError.includes('disambiguation fields')
                           ? 'text-warning'
                           : 'text-status-negative'
                         : 'text-text-muted',
                     ]"
                   />
                   <div class="mt-3 text-xl font-semibold">
-                    {{ correlationError || t("alerts.incidents.noCorrelatedLogs") }}
+                    {{ logsError || t("alerts.incidents.noCorrelatedLogs") }}
                   </div>
                   <div
-                    v-if="correlationError && correlationError.includes('disambiguation fields')"
+                    v-if="logsError && logsError.includes('disambiguation fields')"
                     class="text-text-secondary mt-2 max-w-125 text-center text-sm"
                   >
                     {{ t("alerts.incidents.disambiguationChangedMessage") }}
                   </div>
                   <OButton
-                    v-if="correlationError && !correlationError.includes('disambiguation fields')"
+                    v-if="logsError && !logsError.includes('disambiguation fields')"
                     variant="outline"
                     size="md"
                     @click="refreshCorrelation"
@@ -1309,7 +1309,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
                 <!-- Error/No Data State -->
                 <div
-                  v-else-if="correlationError || !hasCorrelatedData || !hasAnyStreams"
+                  v-else-if="correlationError || !correlationData?.metricStreams?.length"
                   class="flex h-full flex-1 flex-col items-center justify-center gap-2"
                 >
                   <OIcon
@@ -1411,7 +1411,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
                 <!-- Error/No Data State -->
                 <div
-                  v-else-if="correlationError || !hasCorrelatedData || !hasAnyStreams"
+                  v-else-if="correlationError || !correlationData?.traceStreams?.length"
                   class="flex h-full flex-1 flex-col items-center justify-center gap-2"
                 >
                   <OIcon
@@ -1512,7 +1512,7 @@ import incidentsService, {
 } from "@/services/incidents";
 import { oncallTeamsQuery, responsesForIncidentQuery } from "@/services/oncall.queries";
 import type { OnCallResponse } from "@/ts/interfaces/oncall";
-import { streamSchemaQuery } from "@/services/stream.queries";
+import { streamNameListQuery, streamSchemaQuery } from "@/services/stream.queries";
 import { queryClient } from "@/composables/query/queryClient";
 import { updateIncidentMutation, updateIncidentStatusMutation } from "@/services/incidents.queries";
 import { useMutation } from "@tanstack/vue-query";
@@ -1733,6 +1733,8 @@ export default defineComponent({
     const correlationData = ref<IncidentCorrelatedStreams | null>(null);
     const correlationLoading = ref(false);
     const correlationError = ref<string | null>(null);
+    const logCorrelationError = ref<string | null>(null);
+    const logsError = computed(() => correlationError.value || logCorrelationError.value);
 
     // Semantic groups for display name mapping
     const semanticGroups = ref<
@@ -2134,7 +2136,7 @@ export default defineComponent({
     // Fetch correlated telemetry streams
     const fetchCorrelatedStreams = async (force: boolean = false) => {
       if (!incidentDetails.value) return;
-      if (!capabilities.value.topology) {
+      if (incidentDetails.value.error_tracking || !capabilities.value.topology) {
         correlationLoading.value = true;
         correlationError.value = null;
         try {
@@ -2182,9 +2184,68 @@ export default defineComponent({
       }
     };
 
+    const buildErrorCorrelation = async (org: string, incident: Incident, force: boolean) => {
+      logCorrelationError.value = null;
+      const error = incident.error_tracking!;
+      const filters = { trace_id: error.latest_trace.trace_id };
+      const traceStreams =
+        error.latest_trace.stream_name && filters.trace_id
+          ? [{ stream_name: error.latest_trace.stream_name, stream_type: "Traces", filters }]
+          : [];
+      correlationData.value = {
+        serviceName: error.service,
+        matchedDimensions: filters,
+        additionalDimensions: {},
+        logStreams: [],
+        metricStreams: [],
+        traceStreams,
+        correlationData: null,
+      };
+      if (!filters.trace_id) return;
+      const namesQuery = streamNameListQuery(org, "logs");
+      if (force) {
+        await queryClient.invalidateQueries({
+          queryKey: namesQuery.queryKey,
+          exact: true,
+          refetchType: "none",
+        });
+      }
+      const streams = await queryClient.fetchQuery(namesQuery);
+      const logStreams = [];
+      for (const stream of streams) {
+        const schemaQuery = streamSchemaQuery(org, stream.name, "logs");
+        if (force) {
+          await queryClient.invalidateQueries({
+            queryKey: schemaQuery.queryKey,
+            exact: true,
+            refetchType: "none",
+          });
+        }
+        const schema = await queryClient.fetchQuery(schemaQuery);
+        if (
+          (schema.schema || schema.fields || []).some(
+            (field: { name: string }) => field.name === "trace_id",
+          )
+        ) {
+          logStreams.push({ stream_name: stream.name, stream_type: "Logs", filters });
+        }
+      }
+      correlationData.value = { ...correlationData.value!, logStreams };
+    };
+
     // Build fallback correlation using first alert's stream schema
     const buildFallbackCorrelation = async (org: string, incident: Incident, force = false) => {
       try {
+        if (incident.error_tracking) {
+          try {
+            await buildErrorCorrelation(org, incident, force);
+          } catch (error: any) {
+            console.error("Failed to discover error issue log streams:", error);
+            logCorrelationError.value =
+              error?.response?.data?.message || error?.message || t("correlation.failedToLoad");
+          }
+          return;
+        }
         const groupValues: Record<string, string> = incident.group_values ?? {};
         // Get first alert to determine source stream
         const firstAlert = alerts.value?.[0];
@@ -2362,8 +2423,12 @@ export default defineComponent({
       // Expand time range to ensure we capture relevant telemetry
       // If first_alert_at == last_alert_at (single alert), expand ±15 minutes
       const FIFTEEN_MINUTES_MICROS = 15 * 60 * 1000000;
-      const startTime = incidentDetails.value.first_alert_at - FIFTEEN_MINUTES_MICROS;
-      const endTime = incidentDetails.value.last_alert_at + FIFTEEN_MINUTES_MICROS;
+      const startTime =
+        (incidentDetails.value.error_tracking?.first_seen ?? incidentDetails.value.first_alert_at) -
+        FIFTEEN_MINUTES_MICROS;
+      const endTime =
+        (incidentDetails.value.error_tracking?.last_seen ?? incidentDetails.value.last_alert_at) +
+        FIFTEEN_MINUTES_MICROS;
 
       return {
         startTime,
@@ -2592,6 +2657,7 @@ export default defineComponent({
       loading.value = true;
 
       // Reset correlation state when loading new incident
+      logCorrelationError.value = null;
       correlationData.value = null;
       correlationError.value = null;
 
@@ -2648,11 +2714,13 @@ export default defineComponent({
             loadDetails(incidentIdFromUrl);
           } else {
             console.warn("Invalid incident ID in URL");
+            logCorrelationError.value = null;
             correlationData.value = null;
             correlationError.value = null;
           }
         } else {
           // Clear correlation data when drawer closes
+          logCorrelationError.value = null;
           correlationData.value = null;
           correlationError.value = null;
         }
@@ -2689,6 +2757,7 @@ export default defineComponent({
 
     const close = () => {
       // Clear correlation data when closing
+      logCorrelationError.value = null;
       correlationData.value = null;
       correlationError.value = null;
 
@@ -3703,6 +3772,7 @@ export default defineComponent({
       correlationMatchedSetId,
       correlationChipDimensions,
       correlationLoading,
+      logsError,
       correlationError,
       hasCorrelatedData,
       hasAnyStreams,
